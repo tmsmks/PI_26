@@ -1,0 +1,20 @@
+[
+  {
+    "name": "BASE (conso+meteo+temporel)",
+    "nfeat": 48,
+    "f1": 0.903,
+    "roc": 0.995
+  },
+  {
+    "name": "BASE + qualité air",
+    "nfeat": 68,
+    "f1": 0.891,
+    "roc": 0.989
+  },
+  {
+    "name": "BASE + TOUS externes (GDELT...)",
+    "nfeat": 115,
+    "f1": 0.838,
+    "roc": 0.985
+  }
+]

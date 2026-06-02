@@ -1,0 +1,105 @@
+{
+  "winner": "LightGBM",
+  "winner_params": {
+    "colsample_bytree": 0.8,
+    "learning_rate": 0.1,
+    "max_depth": 15,
+    "n_estimators": 200,
+    "scale_pos_weight": 15,
+    "subsample": 0.8
+  },
+  "winner_selection_metric": "f1_cv",
+  "scope": "real",
+  "trained_hospitals": [
+    "lacor_uganda"
+  ],
+  "calibration_method": "none",
+  "n_cv_folds": 5,
+  "grid_scale": "full",
+  "fast_mode": false,
+  "shap_sample_size": 5000,
+  "models_compared": [
+    "RandomForest",
+    "XGBoost",
+    "LightGBM"
+  ],
+  "test_metrics_raw": {
+    "accuracy": 0.9989,
+    "precision": 0.9939,
+    "recall": 0.9939,
+    "f1": 0.9939,
+    "roc_auc": 0.9998,
+    "brier": 0.0017
+  },
+  "test_metrics_calibrated": {
+    "accuracy": 0.9989,
+    "precision": 0.9939,
+    "recall": 0.9939,
+    "f1": 0.9939,
+    "roc_auc": 0.9998,
+    "brier": 0.0017
+  },
+  "test_metrics_by_source_raw": {
+    "real": {
+      "accuracy": 0.9989,
+      "precision": 0.9939,
+      "recall": 0.9939,
+      "f1": 0.9939,
+      "roc_auc": 0.9998,
+      "brier": 0.0017
+    },
+    "real_n": 1752,
+    "real_outage_rate": 0.0942
+  },
+  "test_metrics_by_source_calibrated": {
+    "real": {
+      "accuracy": 0.9989,
+      "precision": 0.9939,
+      "recall": 0.9939,
+      "f1": 0.9939,
+      "roc_auc": 0.9998,
+      "brier": 0.0017
+    },
+    "real_n": 1752,
+    "real_outage_rate": 0.0942
+  },
+  "real_data_hospitals": [
+    "lacor_uganda"
+  ],
+  "comparison": {
+    "RandomForest": {
+      "best_params": {
+        "class_weight": {
+          "0": 1,
+          "1": 10
+        },
+        "max_depth": 12,
+        "min_samples_leaf": 8,
+        "n_estimators": 300
+      },
+      "best_f1_cv": 0.6904
+    },
+    "XGBoost": {
+      "best_params": {
+        "colsample_bytree": 0.8,
+        "learning_rate": 0.05,
+        "max_depth": 12,
+        "n_estimators": 300,
+        "scale_pos_weight": 10,
+        "subsample": 0.8
+      },
+      "best_f1_cv": 0.6877
+    },
+    "LightGBM": {
+      "best_params": {
+        "colsample_bytree": 0.8,
+        "learning_rate": 0.1,
+        "max_depth": 15,
+        "n_estimators": 200,
+        "scale_pos_weight": 15,
+        "subsample": 0.8
+      },
+      "best_f1_cv": 0.7018
+    }
+  }
+}

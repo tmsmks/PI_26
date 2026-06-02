@@ -1,0 +1,115 @@
+{
+  "approach": "pool Lacor + 8 comt\u00e9s EAGLE-I, features exog\u00e8nes (m\u00e9t\u00e9o+temporel)",
+  "n_sites": 9,
+  "n_features": 29,
+  "n_rows": 78840,
+  "loso_roc_auc": {
+    "mean": 0.6283,
+    "std": 0.0437,
+    "min": 0.5335,
+    "max": 0.6924
+  },
+  "loso_by_site": [
+    {
+      "site": "Lacor/Uganda (h\u00f4pital)",
+      "n_test": 8760,
+      "outage_rate": 0.0975,
+      "accuracy": 0.8903,
+      "precision": 0.1409,
+      "recall": 0.0246,
+      "f1": 0.0419,
+      "roc_auc": 0.6324,
+      "brier": 0.1296
+    },
+    {
+      "site": "Maricopa/Phoenix AZ",
+      "n_test": 8760,
+      "outage_rate": 0.1,
+      "accuracy": 0.8437,
+      "precision": 0.1769,
+      "recall": 0.1541,
+      "f1": 0.1647,
+      "roc_auc": 0.6169,
+      "brier": 0.1457
+    },
+    {
+      "site": "Kings/Brooklyn NY",
+      "n_test": 8760,
+      "outage_rate": 0.1006,
+      "accuracy": 0.8309,
+      "precision": 0.1359,
+      "recall": 0.1271,
+      "f1": 0.1314,
+      "roc_auc": 0.5335,
+      "brier": 0.1444
+    },
+    {
+      "site": "Harris/Houston TX",
+      "n_test": 8760,
+      "outage_rate": 0.1001,
+      "accuracy": 0.8471,
+      "precision": 0.2345,
+      "recall": 0.2326,
+      "f1": 0.2335,
+      "roc_auc": 0.6924,
+      "brier": 0.135
+    },
+    {
+      "site": "Cook/Chicago IL",
+      "n_test": 8760,
+      "outage_rate": 0.1002,
+      "accuracy": 0.7442,
+      "precision": 0.1434,
+      "recall": 0.3121,
+      "f1": 0.1965,
+      "roc_auc": 0.6125,
+      "brier": 0.1792
+    },
+    {
+      "site": "Miami-Dade FL",
+      "n_test": 8760,
+      "outage_rate": 0.1,
+      "accuracy": 0.8814,
+      "precision": 0.3073,
+      "recall": 0.1484,
+      "f1": 0.2002,
+      "roc_auc": 0.6722,
+      "brier": 0.1169
+    },
+    {
+      "site": "Los Angeles CA",
+      "n_test": 8760,
+      "outage_rate": 0.1,
+      "accuracy": 0.899,
+      "precision": 0.4262,
+      "recall": 0.0297,
+      "f1": 0.0555,
+      "roc_auc": 0.6408,
+      "brier": 0.1052
+    },
+    {
+      "site": "King/Seattle WA",
+      "n_test": 8760,
+      "outage_rate": 0.1,
+      "accuracy": 0.8866,
+      "precision": 0.1657,
+      "recall": 0.0331,
+      "f1": 0.0552,
+      "roc_auc": 0.5986,
+      "brier": 0.1167
+    },
+    {
+      "site": "Orleans/New Orleans LA",
+      "n_test": 8760,
+      "outage_rate": 0.1002,
+      "accuracy": 0.8586,
+      "precision": 0.2286,
+      "recall": 0.1731,
+      "f1": 0.197,
+      "roc_auc": 0.6556,
+      "brier": 0.1236
+    }
+  ],
+  "single_site_baseline_lacor_to_maricopa_roc": 0.517,
+  "note": "Validation leave-one-site-out : chaque site est pr\u00e9dit par un mod\u00e8le entra\u00een\u00e9 UNIQUEMENT sur les autres sites. ROC-AUC moyen > 0.5 \u21d2 le signal m\u00e9t\u00e9o g\u00e9n\u00e9ralise (partiellement) entre sites r\u00e9els. Cible binaire ~10 %/site (quantile clients coup\u00e9s pour les comt\u00e9s ; is_outage r\u00e9el pour Lacor). Mod\u00e8le exog\u00e8ne (sans consommation) \u2192 ne remplace PAS le mod\u00e8le h\u00f4pital complet de Lacor (qui exploite charge + auto-r\u00e9gression)."
+}

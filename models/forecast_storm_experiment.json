@@ -1,0 +1,90 @@
+{
+  "site": "lacor_uganda",
+  "question": "Les features d'orage (pluie/rafales) am\u00e9liorent-elles la pr\u00e9vision exog\u00e8ne ?",
+  "storm_features_tested": [
+    "storm_gust_max_6h",
+    "storm_gust_anom",
+    "storm_precip_6h",
+    "storm_rain_now",
+    "storm_wet_windy"
+  ],
+  "note_cape_weathercode": "CAPE indisponible dans l'archive ERA5 pour Lacor (colonne=0) ; weathercode ne contient aucun code orage (95-99) en 2022. Seuls precipitation et wind_gusts_10m sont observables \u2192 features test\u00e9es.",
+  "horizons": {
+    "1h": {
+      "base": {
+        "f1": 0.4509,
+        "precision": 0.5552,
+        "recall": 0.425,
+        "roc_auc": 0.8505,
+        "brier": 0.0733,
+        "n_folds": 6
+      },
+      "with_storm": {
+        "f1": 0.4403,
+        "precision": 0.5366,
+        "recall": 0.4182,
+        "roc_auc": 0.8468,
+        "brier": 0.0744,
+        "n_folds": 6
+      },
+      "delta_storm_minus_base": {
+        "f1": -0.0106,
+        "precision": -0.0186,
+        "recall": -0.0068,
+        "roc_auc": -0.0037,
+        "brier": 0.0011
+      }
+    },
+    "3h": {
+      "base": {
+        "f1": 0.4966,
+        "precision": 0.583,
+        "recall": 0.4784,
+        "roc_auc": 0.8329,
+        "brier": 0.1109,
+        "n_folds": 6
+      },
+      "with_storm": {
+        "f1": 0.4575,
+        "precision": 0.5389,
+        "recall": 0.448,
+        "roc_auc": 0.8242,
+        "brier": 0.1142,
+        "n_folds": 6
+      },
+      "delta_storm_minus_base": {
+        "f1": -0.0391,
+        "precision": -0.0441,
+        "recall": -0.0304,
+        "roc_auc": -0.0087,
+        "brier": 0.0033
+      }
+    },
+    "6h": {
+      "base": {
+        "f1": 0.5115,
+        "precision": 0.5809,
+        "recall": 0.4879,
+        "roc_auc": 0.7787,
+        "brier": 0.156,
+        "n_folds": 6
+      },
+      "with_storm": {
+        "f1": 0.4657,
+        "precision": 0.554,
+        "recall": 0.4324,
+        "roc_auc": 0.7744,
+        "brier": 0.1593,
+        "n_folds": 6
+      },
+      "delta_storm_minus_base": {
+        "f1": -0.0458,
+        "precision": -0.0269,
+        "recall": -0.0555,
+        "roc_auc": -0.0043,
+        "brier": 0.0033
+      }
+    }
+  },
+  "method": "Backtest walk-forward mensuel (train mois<M, test mois M, M=7..12), LightGBM."
+}

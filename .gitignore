@@ -1,0 +1,20 @@
+.venv/
+.claude/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.env
+*.egg-info/
+dist/
+build/
+.ipynb_checkpoints/
+
+# Datasets volumineux régénérés par le pipeline (gardés en local uniquement),
+# reproductibles via `python run_pipeline.py`. On conserve toutefois les
+# SOURCES non régénérables par API (*.xlsx : Lacor, Phoenix), seul intrant
+# réellement irremplaçable.
+data/raw/*
+!data/raw/*.xlsx
+data/processed/
+data/features/
