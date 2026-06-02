@@ -1,10 +1,8 @@
 # Documentation des données et APIs
 
-> **Mise à jour 2026-06** — ce document décrit l'état réel du pipeline tel
-> qu'orchestré par `run_pipeline.py` (modes `train` et `live`). Les signaux
-> externes historiques (GDELT, GDACS, USGS, qualité de l'air, NOAA) ont été
-> retirés du code et des données ; les preuves d'évaluation restent dans
-> `models/external_signal_experiment.json` et `models/forecast_storm_experiment.json`.
+Ce document décrit le pipeline de données orchestré par `run_pipeline.py`
+(modes `train` et `live`) : sources ingérées, fusion multi-hôpitaux, jeu de
+features et artefacts de modélisation.
 
 ## Table des matières
 
@@ -15,11 +13,9 @@
 5. [Source 4 — Open-Meteo (Archive + Forecast)](#5-source-4--open-meteo-archive--forecast)
 6. [Source 5 — Electricity Maps (réseau local)](#6-source-5--electricity-maps-réseau-local)
 7. [Source 6 — EskomSePush (délestage RSA, contexte app)](#7-source-6--eskomsepush-délestage-rsa-contexte-app)
-8. [Signaux externes retirés (historique)](#8-signaux-externes-retirés-historique)
-9. [Schéma de fusion des données](#9-schéma-de-fusion-des-données)
-10. [Dictionnaire des variables](#10-dictionnaire-des-variables)
-11. [Modes train / live et fenêtres temporelles](#11-modes-train--live-et-fenêtres-temporelles)
-12. [Sources et jeux de données retirés](#12-sources-et-jeux-de-données-retirés)
+8. [Schéma de fusion des données](#8-schéma-de-fusion-des-données)
+9. [Dictionnaire des variables](#9-dictionnaire-des-variables)
+10. [Modes train / live et fenêtres temporelles](#10-modes-train--live-et-fenêtres-temporelles)
 
 ---
 
@@ -52,7 +48,7 @@ ingest_consumption  →  ingest_meteo  →  ingest_eric  →  ingest_nyc_ll84
                             ↓
                   build_features (feature engineering)
                             ↓
-                  train_baseline (nowcast RF / XGB / LGBM + SHAP)
+                  train_baseline (nowcast) → train_horizons (1/3/6 h)
 ```
 
 Les modèles **horizons 1/3/6 h** (onglet « Prochaine coupure », mêmes features
@@ -364,33 +360,13 @@ Cause **directe** des coupures en Afrique du Sud : le délestage programmé
 comme **contexte temps réel** dans l'onglet « Prochaine coupure », et **n'est
 pas** une feature du modèle entraîné sur Lacor.
 
----
-
-## 8. Signaux externes retirés (historique)
-
-Les sources suivantes ont été **ingérées, transformées en features, puis
-évaluées en walk-forward** entre juin 2025 et juin 2026. Verdict : elles
-**n'annonçaient pas** les coupures Lacor et **dégradaient** le F1 lorsqu'on
-les ajoutait au modèle. Le code d'ingestion, les CSV `data/raw/` et les
-fonctions de feature engineering associées ont été **supprimés** ; seules les
-preuves chiffrées sont conservées.
-
-| Source (retirée) | Préfixe features | Preuve |
-|------------------|------------------|--------|
-| Open-Meteo Air Quality | `air_*` | `models/external_signal_experiment.json` (BASE+air : F1 0.903 → 0.891) |
-| GDELT DOC 2.0 | `gdelt_*` | idem (BASE+tous externes : F1 0.838) |
-| GDACS | `gdacs_*` | idem |
-| USGS Earthquake | `eq_*` | idem |
-| NOAA Storm Events | `storm_*` | idem |
-| Pluie/rafales « orage » (dérivées) | `storm_*` (expérience) | `models/forecast_storm_experiment.json` (Δ F1 négatif sur 1/3/6 h) |
-
-**Note sur `cape` :** la variable reste dans l'archive météo Open-Meteo mais
-est **constante à 0** pour Gulu (ERA5) ; le panneau « contexte orage » de l'app affiche le CAPE
-des **prévisions** Open-Meteo Forecast (temps réel), pas l'archive 2022.
+**Note sur `cape` :** la variable est fournie par Open-Meteo Archive mais
+reste **nulle** pour Gulu en ERA5 2022 ; le panneau « contexte orage » de
+l'app affiche le CAPE des **prévisions** Open-Meteo Forecast (temps réel).
 
 ---
 
-## 9. Schéma de fusion des données
+## 8. Schéma de fusion des données
 
 ```
         Bases hospitalières horaires (Lacor + ERIC NHS + NYC LL84)
@@ -436,14 +412,14 @@ des **prévisions** Open-Meteo Forecast (temps réel), pas l'archive 2022.
 | NYC LL84 (horaire) | 43 800 | 5 |
 | **Dataset final fusionné** | **~140 160** | **16 hôpitaux** (entraînement multi-sources) |
 
-Après nettoyage (juin 2026), le dataset final compte **≈ 76 colonnes**
+Le dataset de features compte **≈ 76 colonnes**
 (météo + charge + `em_*` + historique coupures). Le nowcast utilise **54
 features** numériques (`train_baseline`, scope `real`) ; les horizons 1/3/6 h
 réutilisent **le même jeu** (`train_horizons.py`, étape 5 du pipeline).
 
 ---
 
-## 10. Dictionnaire des variables
+## 9. Dictionnaire des variables
 
 ### Variables brutes (après preprocessing)
 
@@ -481,7 +457,7 @@ dynamiquement via `COLS_TO_DROP` dans `src/models/train_baseline.py`).
 
 ---
 
-## 11. Modes train / live et fenêtres temporelles
+## 10. Modes train / live et fenêtres temporelles
 
 `run_pipeline.py` expose deux modes :
 
@@ -518,16 +494,8 @@ Le système n'est **pas** un flux streaming strict. Il fonctionne en :
 On parle donc de **quasi temps réel / near real-time** : données récentes
 agrégées par pas horaire, pas de streaming continu seconde par seconde.
 
----
+### Paramètres hors pipeline
 
-## 12. Sources et jeux de données retirés
-
-| Source / jeu | Statut | Raison |
-|--------------|--------|--------|
-| **GDELT, GDACS, USGS, Air Quality, NOAA** | ❌ Code + CSV supprimés | Testés inutiles ou dégradants (cf. §8 et JSON d'expérience) |
-| **MF Power Kenya** | ❌ Script supprimé | Jamais branché au pipeline |
-| **OMS / WHO GHO** (`who_reliability.csv`) | ❌ CSV supprimé | Fiabilité OMS = paramètre statique dans `src/utils/hospitals.py` |
-| **Eskom production / loadshedding history** | ❌ CSV supprimés | Remplacés par EskomSePush temps réel (contexte app RSA) |
-| **Kaggle, SA electricity, Zindi, Phoenix Excel** | ❌ Supprimés | Explorations locales jamais intégrées |
-| **Phoenix Hospital** (consommation) | ❌ Jamais source de cible | Pas de `is_outage` terrain |
-| **`consumption_simulated.csv`** | ❌ Supprimé | Données synthétiques non utilisées |
+La **fiabilité électrique OMS** par pays est codée dans `src/utils/hospitals.py`
+(ajustement d'affichage par profil d'hôpital). Elle n'est pas ingérée comme
+fichier CSV séparé.

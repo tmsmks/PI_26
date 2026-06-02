@@ -57,12 +57,12 @@ Creer un **systeme de stockage energetique** adapte a des facteurs multi-critere
 ### 3.1 Inclus dans le perimetre
 
 - Ingestion multi-sources:
-  - Lacor (donnees de charge et disponibilite reseau),
-  - validation externe historique Maricopa/EAGLE-I (trace documentaire, hors depot),
-  - OMS (fiabilite electrique par pays),
-  - Open-Meteo (variables meteorologiques),
-  - Eskom/EskomSePush (contexte de stabilite reseau),
-  - NHS ERIC (profils hospitaliers).
+  - Lacor (donnees de charge et cible `is_outage` terrain),
+  - NHS ERIC et NYC LL84 (profils hospitaliers comparables),
+  - Open-Meteo Archive + Forecast (meteo historique et previsionnelle),
+  - Electricity Maps (contexte reseau zone, hors features modele),
+  - EskomSePush (delestage programme RSA, contexte app),
+  - OMS (fiabilite electrique par pays, parametres dans `hospitals.py`).
 - Nettoyage et fusion des donnees temporelles.
 - Feature engineering (variables temporelles, consommation, meteo, contexte).
 - Entrainement nowcast (RF / XGB / LGBM) + horizons 1/3/6 h (memes features).

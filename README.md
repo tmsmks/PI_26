@@ -9,14 +9,7 @@ Le pipeline d'entraînement est **multi-hôpitaux** :
 - **Lacor Hospital** (Ouganda, historique 15 min rééchantillonné à l'heure) — site de référence
 - **ERIC NHS** (UK, profils horaires par hôpital, 10 sites)
 - **NYC LL84** (USA, profils horaires bâtiment, 5 sites)
-- **Enrichissement contextuel** : météo (Open-Meteo Archive + Forecast) en feature du modèle ; réseau électrique (Electricity Maps) et délestage (EskomSePush) comme **contexte temps réel** (affiché, exclu du modèle)
-
-> 🧪 **Signaux externes testés puis retirés.** Médias (GDELT), catastrophes
-> (GDACS), sismique (USGS), qualité de l'air et tempêtes (NOAA) ont été ingérés,
-> transformés en features, puis évalués en walk-forward : ils **n'annonçaient
-> pas** les coupures et **dégradaient** le modèle. Ils ont été supprimés du
-> pipeline ; les preuves chiffrées sont conservées dans
-> `models/external_signal_experiment.json` et `models/forecast_storm_experiment.json`.
+- **Enrichissement contextuel** : météo (Open-Meteo Archive + Forecast) en entrée du modèle ; réseau électrique (Electricity Maps) et délestage (EskomSePush) en **contexte temps réel** dans l’interface (hors features du modèle)
 
 La variable cible est `is_outage` (1 = coupure, 0 = pas de coupure).
 
@@ -154,11 +147,9 @@ Les métriques exactes du run courant sont écrites par `train_baseline.py` dans
 > Le **chiffre honnête est le backtest walk-forward ci-dessous**.
 >
 > Ces chiffres portent **uniquement sur des coupures réellement observées** (Lacor,
-> 9.4 % de coupures). Deux fuites de cible ont été retirées du jeu de features :
-> `grid_availability_ratio` **et** `grid_available` (cette dernière ≈ l'inverse
-> exact de `is_outage` : `grid_available=1` ⇒ 0 coupure sur 131 362 lignes). Le
-> modèle conserve la **consommation** (signal le plus prédictif sur Lacor) — choix
-> assumé d'un **modèle pilote mono-site**.
+> ~9,4 % des heures). Le jeu de features exclut les colonnes à fuite directe
+> (`grid_available`, `grid_availability_ratio`, etc.) et conserve la
+> **consommation** et l’**historique des coupures** — modèle pilote **mono-site**.
 
 ### Validation temporelle (généralisation dans le temps)
 
@@ -176,40 +167,16 @@ part du signal. La variance ±0.14 est le prix honnête d'un seul site × une an
 ⚠️ Ceci mesure la stabilité **dans le temps sur Lacor** — pas la généralisation à
 **d'autres sites**. Détail par mois : `models/backtest_by_month.csv`.
 
-### Validation EXTERNE sur un site réel indépendant (généralisation spatiale)
+### Généralisation spatiale
 
-Pour tester la généralisation à un **autre site réel**, le modèle a été confronté au
-comté de **Maricopa / Phoenix (Arizona)** via les coupures **réelles EAGLE-I**
-(ORNL/DOE, [figshare 24237376](https://doi.org/10.6084/m9.figshare.24237376),
-CC BY 4.0, 2022, agrégées à l'heure) + la météo Open-Meteo de Phoenix.
+Le modèle est **entraîné et validé sur Lacor** (coupures terrain 2022). Pour les
+autres hôpitaux de l’interface, le **même modèle** est appliqué à un profil de
+consommation et une météo locales : les scores sont **illustratifs**, non validés
+inter-sites. Il n’existe pas, à ce jour, de jeu public équivalent « hôpital ×
+coupure horaire » pour plusieurs pays ; le clonage de profil sert à comparer des
+contextes réseau et climatiques, pas à prétendre à une validation multi-sites.
 
-> ℹ️ Les données EAGLE-I et le script de validation externe ont été **retirés du
-> dépôt** (volumineux, et le constat ci-dessous est concluant). Les chiffres sont
-> conservés ici comme trace méthodologique.
-
-EAGLE-I ne fournit pas la consommation hospitalière → on comparait un modèle
-**exogène** (météo + temporel seul, sans charge ni auto-régression) :
-
-| | ROC-AUC | Lecture |
-|---|---|---|
-| Modèle météo-seul, **interne Lacor** (test oct–déc) | **0.67** | bien plus faible que le modèle complet (0.98) → la puissance vient surtout de l'**auto-régression / consommation**, pas de la météo |
-| **Transfert Lacor → Maricopa** (site réel) | **0.52** | ≈ hasard → le signal météo **ne se généralise pas** à un autre site |
-| Climatologie locale mois×heure (Maricopa) | **0.71** | une simple moyenne locale **bat** le modèle Lacor transféré |
-
-**Conclusion empirique** : la relation météo→coupure est **spécifique au site**.
-Le modèle entraîné sur Lacor **ne prédit pas** les coupures d'un site indépendant
-mieux que le hasard ; la promesse multi-hôpitaux reste donc une **extrapolation
-illustrative** (profil cloné), pas une capacité validée — c'est exactement ce que
-l'app affiche pour les sites ≠ Lacor.
-
-> **Sur la disponibilité de vraies données.** Une recherche (Zenodo, Google Dataset
-> Search, ORNL) montre qu'il n'existe **pas** de jeu public « hôpital × coupure
-> binaire horaire » comparable à Lacor (le seul résultat Zenodo pertinent est Lacor
-> lui-même). Les sources réelles exploitables sont au niveau **comté/région** :
-> EAGLE-I (US, 2014-2023, historique), ODIN & Maryland (ORNL, temps réel). C'est
-> précisément cette rareté qui explique le recours au clonage dans ce projet.
-
-### Ce que sert l'app (et pourquoi)
+### Ce que sert l'app
 
 | Site | Modèle servi | Explication |
 |---|---|---|
@@ -221,15 +188,11 @@ appliqué à un profil de consommation emprunté : un score **illustratif** et n
 une capacité validée — la généralisation inter-sites n'est pas démontrée
 (cf. ci-dessus). L'app l'annonce explicitement dans le profil de chaque site.
 
-> **Expérience archivée — modèle météo multi-sites** : résultats dans
-> `models/multisite_summary.json` et `models/multisite_loso_by_site.csv`
-> (preuve méthodologique, non utilisés par l'app).
-
 Les classements de features sont disponibles ici :
 - `models/feature_importance.csv` — importance MDI du modèle gagnant
 - `models/shap_feature_importance.csv` — importance SHAP globale (|mean|)
 
-Le fichier `calibrated_model.joblib` est chargé par défaut dans l'app. Il contient le **gagnant** courant de la comparaison RF / XGBoost / LightGBM, servi avec la stratégie de calibration retenue (`auto` : aucune / isotonique / sigmoïde selon le Brier de validation — `calibration_method` dans `training_summary.json`). L'app sait encore lire l'ancien nom `calibrated_rf.joblib` en repli.
+Le fichier `calibrated_model.joblib` est chargé par défaut dans l'app. Il contient le **gagnant** de la comparaison RF / XGBoost / LightGBM, avec la stratégie de calibration retenue (`calibration_method` dans `training_summary.json`).
 
 ## Sources de données
 
@@ -250,11 +213,12 @@ Les données [ERIC (Estates Returns Information Collection)](https://digital.nhs
 ## Interface Streamlit
 
 L'application [app.py](app.py) propose :
-- **Hôpitaux réels** sélectionnables (Lacor + 10 NHS ERIC + 5 NYC LL84 + réseaux live `africa_grid`)
-- **Bandeau réseau temps réel** (Electricity Maps) par hôpital : zone, charge MW, intensité carbone, mix renouvelable/fossile, conso hôpital estimée
-- **Onglet 1 — Prédiction historique** : période d'analyse au choix (7 presets : 72 h, mois, saisons, année 2022) et probabilité par heure + SHAP waterfall local
-- **Onglet 2 — Prévisions J+7** : trajectoire de risque heure par heure sur 7 jours via Open-Meteo Forecast (presets : seuils 50% / 70%, top 5 heures critiques, synthèse par jour)
-- **Onglet 3 — Simulation manuelle** : 13 paramètres (3 temporel · 4 énergie · 6 météo) + jauge de risque + waterfall SHAP + comparaison aux conditions moyennes
+- **27 hôpitaux** sélectionnables (Lacor, 10 NHS ERIC, 5 NYC LL84, 12 profils `africa_grid`)
+- **Bandeau réseau temps réel** (Electricity Maps) : zone, charge MW, carbone, mix, consommation estimée
+- **Prochaine coupure (24 h)** : probabilité de coupure dans les 1 / 3 / 6 h (modèles horizons + mode temps réel)
+- **Analyse historique** : période au choix, probabilité horaire + SHAP waterfall
+- **Prévisions J+7** : trajectoire de risque sur 7 jours (Open-Meteo Forecast)
+- **Simulation manuelle** : 13 paramètres (temporel, énergie, météo) + jauge de risque + SHAP
 - **Ajustement par profil** : adaptation au réseau électrique de chaque hôpital (fiabilité OMS estimée + stabilité du réseau, voir `adjust_for_hospital_profile`)
 - **Garde-fou features** : détection automatique d'une désynchronisation entre le dataset (`features_dataset.csv`) et le modèle entraîné (`feature_names_in_`)
 - **Gestion d'erreurs** : messages explicatifs si le modèle ou les données sont manquants
@@ -274,7 +238,7 @@ Le fichier [src/utils/config.py](src/utils/config.py) référence les coordonné
 
 ## Facteurs utilisés (features)
 
-Le dataset de features contient plus de 100 colonnes numériques ; le modèle exclut explicitement les colonnes à fuite, constantes ou redondantes définies dans `COLS_TO_DROP` (`src/models/train_baseline.py`).
+Le dataset de features compte environ 76 colonnes après engineering ; le modèle en utilise **54** numériques, sélectionnées via `COLS_TO_DROP` dans `src/utils/config.py`.
 
 Familles de facteurs effectivement utilisées :
 
