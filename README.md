@@ -62,7 +62,10 @@ PI_26/
 │   └── utils/
 │       ├── config.py             ← configuration centralisée (APIs, hôpitaux)
 │       └── io.py                 ← helpers I/O + logging
-├── app.py                    ← interface Streamlit (27 hôpitaux, SHAP local)
+├── app.py                    ← interface Streamlit (4 onglets, 27 hôpitaux)
+├── src/app_data.py           ← chargements cachés (modèles, données, résumés)
+├── src/ui_content.py         ← libellés features, catalogue des sources
+├── src/ui_components.py      ← cartes risque, waterfall SHAP
 ├── run_pipeline.py           ← exécution complète du pipeline (CLI train|live)
 ├── requirements.txt          ← dépendances avec versions fixées
 └── README.md
@@ -95,11 +98,14 @@ python run_pipeline.py --fast
 # Tuning fin (override CV folds, taille SHAP, taille de grille…)
 python run_pipeline.py --grid-scale compact --cv-folds 3 --shap-sample-size 2000
 
+# Validation généralisation inter-sites (EAGLE-I, leave-one-site-out)
+python run_pipeline.py --multisite
+
 # Interface Streamlit
 streamlit run app.py
 ```
 
-Tous les flags CLI sont définis dans `run_pipeline.py` (`--mode {train,live}`, `--window-days`, `--fast`, `--grid-scale {compact,full}`, `--cv-folds`, `--shap-sample-size`, `--no-full-artifacts`, `--scope {real,all}`).
+Tous les flags CLI sont définis dans `run_pipeline.py` (`--mode {train,live}`, `--window-days`, `--fast`, `--grid-scale {compact,full}`, `--cv-folds`, `--shap-sample-size`, `--no-full-artifacts`, `--scope {real,all}`, `--multisite`).
 
 > **Portée d'entraînement (`--scope`)** — `real` (défaut) n'entraîne et n'évalue
 > que sur les hôpitaux à coupures **réellement observées** (Lacor). Les sites
@@ -109,7 +115,7 @@ Tous les flags CLI sont définis dans `run_pipeline.py` (`--mode {train,live}`, 
 
 ## Pipeline d'entraînement
 
-`run_pipeline.py` orchestre **5 étapes** :
+`run_pipeline.py` orchestre **5 étapes** + **5 bis** (durée) + **6 opt-in** (EAGLE-I) :
 
 1. **Ingestion** — appelle séquentiellement les scripts `src/data/ingest_*.py`
 2. **Preprocessing** ([src/data/preprocessing.py](src/data/preprocessing.py)) — rééchantillonnage Lacor 15 min → 1 h, fusion multi-hôpitaux (météo + contexte réseau Electricity Maps)
@@ -122,6 +128,8 @@ Tous les flags CLI sont définis dans `run_pipeline.py` (`--mode {train,live}`, 
    5. Évaluation hold-out (brut + calibré)
    6. **SHAP TreeExplainer** + sauvegarde des artefacts
 5. **Horizons 1/3/6 h** ([src/models/train_horizons.py](src/models/train_horizons.py)) — même features que le nowcast, cible « coupure dans les H prochaines heures » → `models/nowcast_horizons/`
+5 bis. **Modèle de durée** ([src/models/train_duration.py](src/models/train_duration.py)) — régression sur la durée réelle des épisodes Lacor → `models/duration_model.joblib` + `models/duration_summary.json`
+6. **Multi-sites EAGLE-I** (opt-in `--multisite`) — [src/data/ingest_eaglei.py](src/data/ingest_eaglei.py) + [src/models/multisite_experiment.py](src/models/multisite_experiment.py) → `models/multisite_summary.json`
 
 > **Contexte réseau exclu du modèle (`config.EXTERNAL_SIGNAL_PREFIXES`)** — la
 > charge réseau Electricity Maps (`em_*`) est ingérée et affichée comme contexte
@@ -169,24 +177,43 @@ part du signal. La variance ±0.14 est le prix honnête d'un seul site × une an
 
 ### Généralisation spatiale
 
-Le modèle est **entraîné et validé sur Lacor** (coupures terrain 2022). Pour les
-autres hôpitaux de l’interface, le **même modèle** est appliqué à un profil de
-consommation et une météo locales : les scores sont **illustratifs**, non validés
-inter-sites. Il n’existe pas, à ce jour, de jeu public équivalent « hôpital ×
-coupure horaire » pour plusieurs pays ; le clonage de profil sert à comparer des
-contextes réseau et climatiques, pas à prétendre à une validation multi-sites.
+Deux niveaux à ne pas confondre :
+
+**1. Modèle servi dans l’app (nowcast + horizons + durée)** — entraîné sur **Lacor
+seul** (`--scope real`, coupures terrain 2022). Pour tout autre hôpital de
+l’interface, c’est **le même** `calibrated_model.joblib` : scores **illustratifs**
+pour ce site (l’app l’affiche via badges et notes).
+
+**2. Validation reproductible inter-sites (EAGLE-I, opt-in)** — depuis tes derniers
+ajouts, ce n’est plus un résultat orphelin : `ingest_eaglei.py` +
+`multisite_experiment.py` + `python run_pipeline.py --multisite` régénèrent
+`models/multisite_summary.json` et `models/multisite_loso_by_site.csv`.
+
+- **Données** : Lacor (réel) + **8 comtés US** avec coupures **réelles** EAGLE-I
+  (clients coupés, 15 min → horaire, seuil p90 ≈ 10 %/site).
+- **Protocole** : leave-one-site-out — LightGBM **exogène** (29 features météo +
+  calendrier, **sans** consommation ni auto-régression des coupures).
+- **Résultat typique** : ROC-AUC LOSO moyen **≈ 0,63** (vs **≈ 0,99** intra-Lacor)
+  → la météo seule **généralise partiellement** entre réseaux réels ; la
+  sur-spécialisation au contexte ougandais est **mesurée**, pas supposée.
+
+Ce modèle LOSO **ne remplace pas** le modèle hôpital de l’app (qui utilise charge +
+historique des coupures). Il borne ce que l’on peut espérer hors Lacor sans
+prétendre valider Bellevue ou Lagos comme Lacor. Panneau Streamlit : expander
+« Validation & robustesse » → onglet généralisation.
 
 ### Ce que sert l'app
 
 | Site | Modèle servi | Explication |
 |---|---|---|
-| **Lacor** | nowcast calibré + horizons 1/3/6 h (mêmes features) | proba calibrée + SHAP |
-| **Tous les autres** | **même** modèle Lacor, profil de consommation cloné | ⚠️ **score illustratif, non validé** pour ce site |
+| **Lacor** | nowcast + horizons 1/3/6 h + durée | Coupures réelles — seul site calibré |
+| **ERIC / NYC** | **même** modèle Lacor | Charge **réelle**, coupures **synthétiques** — illustratif |
+| **`africa_grid`** | **même** modèle Lacor | Profil Lacor **cloné** + météo/EM locales — illustratif |
 
-L'app sert **un seul** modèle (Lacor). Pour un site ≠ Lacor, c'est ce modèle
-appliqué à un profil de consommation emprunté : un score **illustratif** et non
-une capacité validée — la généralisation inter-sites n'est pas démontrée
-(cf. ci-dessus). L'app l'annonce explicitement dans le profil de chaque site.
+L’app charge **un seul** modèle de probabilité (Lacor). La généralisation du
+**modèle hôpital complet** vers un autre site n’est pas validée ; en revanche
+l’expérience **EAGLE-I reproductible** quantifie une généralisation **partielle**
+du signal météo (cf. ci-dessus).
 
 Les classements de features sont disponibles ici :
 - `models/feature_importance.csv` — importance MDI du modèle gagnant
@@ -205,6 +232,7 @@ Le fichier `calibrated_model.joblib` est chargé par défaut dans l'app. Il cont
 | Open-Meteo Forecast | API publique | horaire (7 j) | Prévisions pour le mode live / app |
 | Electricity Maps | API token | horaire | Charge & mix réseau de zone (contexte) |
 | EskomSePush | API token | temps réel | Stade de délestage RSA (contexte, sites sud-africains) |
+| EAGLE-I (ORNL) | figshare (opt-in) | 15 min → horaire | Validation LOSO inter-sites (`--multisite`) ; panneau app |
 
 ### Données ERIC NHS
 
@@ -212,20 +240,45 @@ Les données [ERIC (Estates Returns Information Collection)](https://digital.nhs
 
 ## Interface Streamlit
 
-L'application [app.py](app.py) propose :
-- **27 hôpitaux** sélectionnables (Lacor, 10 NHS ERIC, 5 NYC LL84, 12 profils `africa_grid`)
-- **Bandeau réseau temps réel** (Electricity Maps) : zone, charge MW, carbone, mix, consommation estimée
-- **Prochaine coupure (24 h)** : probabilité de coupure dans les 1 / 3 / 6 h (modèles horizons + mode temps réel)
-- **Analyse historique** : période au choix, probabilité horaire + SHAP waterfall
-- **Prévisions J+7** : trajectoire de risque sur 7 jours (Open-Meteo Forecast)
-- **Simulation manuelle** : 13 paramètres (temporel, énergie, météo) + jauge de risque + SHAP
-- **Ajustement par profil** : adaptation au réseau électrique de chaque hôpital (fiabilité OMS estimée + stabilité du réseau, voir `adjust_for_hospital_profile`)
-- **Garde-fou features** : détection automatique d'une désynchronisation entre le dataset (`features_dataset.csv`) et le modèle entraîné (`feature_names_in_`)
-- **Gestion d'erreurs** : messages explicatifs si le modèle ou les données sont manquants
+Lancer : `streamlit run app.py` (port par défaut 8501).
+
+### Sélection des hôpitaux
+
+**27 sites** dans le menu (Lacor + 10 ERIC NHS + 5 NYC LL84 + 11 profils `africa_grid`, dont 1 masqué dans le catalogue global).
+
+- **Filtre radio** « Type de cible (coupures) » : Tous · Réel (Lacor) · Charge réelle — coupures simulées (NHS/NYC) · Cloné (`africa_grid`).
+- **Liste déroulante** : préfixes `🎯 [Réel]`, `🧪 [Charge réelle, coupures simulées]`, `♻️ [Cloné]` + drapeau + nom. Seules ~10 lignes visibles : **tapez le nom** pour filtrer (`St Thomas`, `Bellevue`, `Lagos`, etc.).
+
+Chaque fiche affiche un **badge de provenance de la cible** (`get_target_source` / `TARGET_SOURCE_META` dans [src/utils/hospitals.py](src/utils/hospitals.py)) :
+
+| Badge (UI) | Signification |
+|------------|----------------|
+| Coupures réelles observées (terrain) | Lacor — modèle entraîné et évalué sur ce site |
+| Charge réelle — coupures simulées | ERIC / NYC — conso réelle, étiquettes `is_outage` simulées à l’ingestion |
+| Aucune coupure étiquetée (profil cloné Lacor) | `africa_grid` — profil Lacor cloné/redimensionné, score illustratif |
+
+### Onglets ([app.py](app.py))
+
+| Onglet | Rôle |
+|--------|------|
+| **Prochaine coupure (24 h)** | P(coupure) à 1 / 3 / 6 h (`models/nowcast_horizons/`) ; historique 2022 ou temps réel (Electricity Maps) pour Lacor et `africa_grid` |
+| **Analyse historique** | Période au choix, courbe de risque horaire, SHAP, stats conso/coupures |
+| **Prévisions J+7** | Risque + **durée estimée** heure par heure (`duration_model.joblib`) |
+| **Simulation manuelle** | 13 curseurs → proba + durée + jauge + SHAP ; stress hors distribution si valeurs extrêmes |
+
+### Panneaux transverses
+
+- **Bandeau Electricity Maps** (24 h) : charge réseau, stress vs moyenne, conso estimée, carbone, mix.
+- **Expander « Sources & facteurs »** : SHAP global, catalogue des sources ([src/ui_content.py](src/ui_content.py)).
+- **Expander « Validation & robustesse »** : modèle de durée (`duration_summary.json`) et LOSO EAGLE-I (`multisite_summary.json`).
+- **Sidebar** : modèle gagnant, scope `real`/`all`, statut durée, ROC-AUC LOSO si disponible.
+- **Garde-fou features** : alerte si désynchronisation dataset ↔ `feature_names_in_`.
+
+Couche de chargement : [src/app_data.py](src/app_data.py). Détail calculs : [docs/DOCUMENTATION_MODELE_ET_PREDICTIONS.md](docs/DOCUMENTATION_MODELE_ET_PREDICTIONS.md) §17.
 
 ## Hôpitaux couverts
 
-L'app Streamlit propose les hôpitaux **réels** : Lacor + 10 NHS ERIC + 5 NYC LL84, plus les profils `africa_grid` (charge estimée pilotée par le réseau live Electricity Maps).
+Le sélecteur Streamlit propose **27 hôpitaux** : Lacor, 10 NHS ERIC, 5 NYC LL84 et les profils `africa_grid` visibles (charge estimée + réseau live pour « Prochaine coupure »).
 
 | Catégorie | Nb | Hôpitaux |
 |---|---|---|

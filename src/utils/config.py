@@ -126,6 +126,30 @@ ESKOM_SEPUSH_STATUS_BLOCK = {
     "groote_schuur_sa": "capetown",
 }
 
+# ── EAGLE-I (coupures réelles par comté, USA) ───────────────────────
+# EAGLE-I (Environment for Analysis of Geo-Located Energy Information,
+# Oak Ridge National Laboratory) publie les coupures d'électricité réelles
+# par comté américain : nombre de clients coupés (`customers_out`) toutes
+# les 15 min, plus un fichier MCC (Max Customer Count) par comté pour
+# normaliser. C'est une SOURCE DE VÉRITÉ TERRAIN multi-sites — utilisée
+# pour valider la généralisation inter-sites (cf. multisite_experiment.py)
+# et lever la limite « un seul site vérité terrain » (Lacor).
+#
+# Téléchargement (figshare, libre, ~quelques centaines de Mo/an) :
+#   https://doi.org/10.6084/m9.figshare.24237376  (EAGLE-I 2014-2023)
+# Déposer les CSV annuels nationaux dans EAGLEI_SOURCE_DIR :
+#   data/raw/eaglei_source/eaglei_outages_<YYYY>.csv   (snapshots 15 min)
+#   data/raw/eaglei_source/MCC.csv                     (max clients/comté)
+# Le module src/data/ingest_eaglei.py filtre les comtés des hôpitaux,
+# rééchantillonne à l'heure et écrit data/raw/eaglei_<site>.csv.
+EAGLEI_SOURCE_DIR = RAW_DIR / "eaglei_source"
+EAGLEI_DOWNLOAD_DOI = "https://doi.org/10.6084/m9.figshare.24237376"
+EAGLEI_YEAR = 2023  # année EAGLE-I de référence pour l'expérience multi-sites
+# Seuil de binarisation de la cible par site : une heure est « en coupure »
+# si le nb de clients coupés dépasse le quantile p90 propre au site
+# (⇒ ~10 % de positifs/site, comparable au taux réel de Lacor ≈ 9.7 %).
+EAGLEI_OUTAGE_QUANTILE = 0.90
+
 # ── Fichiers de données brutes ──────────────────────────────────────
 LACOR_FILE = RAW_DIR / "lacor_hospital.xlsx"
 

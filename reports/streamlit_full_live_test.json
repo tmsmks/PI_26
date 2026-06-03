@@ -1,0 +1,82 @@
+{
+  "url": "http://localhost:8502",
+  "results": [
+    {
+      "search": "Lacor",
+      "family": "lacor",
+      "ok": false,
+      "issues": [
+        "analyse : pas de synthèse risque",
+        "J+7 : colonne durée absente",
+        "simulation : pas de résultat"
+      ]
+    },
+    {
+      "search": "Groote Schuur",
+      "family": "africa",
+      "ok": false,
+      "issues": [
+        "analyse : pas de synthèse risque",
+        "J+7 : colonne durée absente",
+        "simulation : pas de résultat"
+      ]
+    },
+    {
+      "search": "St Thomas",
+      "family": "eric",
+      "ok": false,
+      "issues": [
+        "mode historique absent (eric)",
+        "analyse : pas de synthèse risque",
+        "J+7 : colonne durée absente",
+        "simulation : pas de résultat"
+      ]
+    },
+    {
+      "search": "Bellevue",
+      "family": "nyc",
+      "ok": false,
+      "issues": [
+        "analyse : pas de synthèse risque",
+        "J+7 : colonne durée absente",
+        "simulation : pas de résultat"
+      ]
+    },
+    {
+      "search": "Manchester",
+      "family": "eric",
+      "ok": false,
+      "issues": [
+        "mode historique absent (eric)",
+        "analyse : pas de synthèse risque",
+        "J+7 : colonne durée absente",
+        "simulation : pas de résultat"
+      ]
+    },
+    {
+      "search": "Kenyatta",
+      "family": "africa",
+      "ok": false,
+      "issues": [
+        "analyse : pas de synthèse risque",
+        "J+7 : colonne durée absente",
+        "simulation : pas de résultat"
+      ]
+    },
+    {
+      "search": "NYU",
+      "family": "nyc",
+      "ok": false,
+      "issues": [
+        "analyse : pas de synthèse risque",
+        "J+7 : colonne durée absente",
+        "simulation : pas de résultat"
+      ]
+    }
+  ],
+  "selector_caption": [
+    "27 sites sélectionnables (catalogue complet : 27)"
+  ],
+  "n_ok": 0,
+  "n_fail": 7
+}

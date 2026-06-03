@@ -1,6 +1,8 @@
 """
 Interface Streamlit — Prédiction de coupures d'électricité en hôpitaux.
-Deux modes : Analyse historique + Simulation manuelle.
+
+Onglets : Prochaine coupure (1/3/6 h), Analyse historique, Prévisions J+7,
+Simulation manuelle. Couche données : src/app_data.py ; UI : src/ui_*.py.
 """
 
 import sys
@@ -41,17 +43,22 @@ from src.app_data import (
     load_meteo_forecast,
     load_model,
     load_horizon_models,
+    load_duration_model,
+    load_duration_summary,
+    load_multisite_summary,
     load_realtime_forecast,
+    _duration_summary_mtime,
     _horizon_models_mtime,
+    _multisite_summary_mtime,
     load_shap_explainer,
 )
 from src.loadshedding import is_supported as loadshedding_supported
+from src.utils.hospitals import TARGET_SOURCE_META, get_target_source
 
 # ── Configuration ────────────────────────────────────────────────────
 
 st.set_page_config(
     page_title="Prédiction de coupures",
-    page_icon="⚡",
     layout="wide",
 )
 
@@ -74,6 +81,47 @@ REAL_HOSPITAL_KEYS = [
 ]
 ALL_HOSPITAL_KEYS = list(HOSPITAL_DISPLAY.keys())
 
+# Ordre d'affichage dans le menu : réel → synthétique → cloné (honnêteté UX).
+_TARGET_SOURCE_ORDER = ("real", "synthetic", "cloned")
+_TARGET_SOURCE_SHORT = {
+    "real": "Réel",
+    "synthetic": "Charge réelle, coupures simulées",
+    "cloned": "Cloné",
+}
+
+
+def _hospitals_by_target_source(keys: list[str]) -> dict[str, list[str]]:
+    """Regroupe les clés hôpital par provenance de la cible `is_outage`."""
+    groups: dict[str, list[str]] = {t: [] for t in _TARGET_SOURCE_ORDER}
+    for k in keys:
+        tsrc = get_target_source(k, HOSPITAL_DISPLAY[k])
+        groups.setdefault(tsrc, []).append(k)
+    for tsrc in groups:
+        groups[tsrc].sort(
+            key=lambda k: HOSPITAL_DISPLAY[k]["name"].casefold(),
+        )
+    return groups
+
+
+def _sorted_hospital_keys(keys: list[str]) -> list[str]:
+    """Liste triée : réel, puis synthétique, puis cloné (alphabétique dans chaque groupe)."""
+    by_src = _hospitals_by_target_source(keys)
+    out: list[str] = []
+    for tsrc in _TARGET_SOURCE_ORDER:
+        out.extend(by_src.get(tsrc, []))
+    return out
+
+
+def _hospital_select_label(hospital_key: str) -> str:
+    """Libellé menu : catégorie + nom + lieu."""
+    h = HOSPITAL_DISPLAY[hospital_key]
+    tsrc = get_target_source(hospital_key, h)
+    tag = _TARGET_SOURCE_SHORT[tsrc]
+    return f"[{tag}] {h['name']} — {h['location']}"
+
+
+HOSPITAL_BY_SOURCE = _hospitals_by_target_source(REAL_HOSPITAL_KEYS)
+
 from src.nowcast_horizons import predict_horizons
 from src.ui_content import (
     DATA_SOURCES,
@@ -87,7 +135,6 @@ from src.ui_components import (
     show_factors,
     show_risk_result,
     show_shap_waterfall,
-    ui_step,
 )
 
 
@@ -208,9 +255,13 @@ def build_forecast_predictions(
     #    Pour un site ≠ Lacor : score illustratif (cf. site_profile_notes).
     proba_adj = site_predict_proba(feat_batch)
 
+    # Durée estimée par heure via le modèle de durée dédié (repli heuristique).
+    durations = _estimate_durations_batch(proba_adj, feat_batch)
+
     return pd.DataFrame({
         "datetime": fc["datetime"].values,
         "outage_probability": proba_adj,
+        "duration_est_h": durations,
         "temperature_2m": fc.get("temperature_2m", pd.Series(0.0, index=fc.index)).astype(float).values,
         "precipitation": fc.get("precipitation", pd.Series(0.0, index=fc.index)).astype(float).values,
         "wind_speed_10m": fc.get("wind_speed_10m", pd.Series(0.0, index=fc.index)).astype(float).values,
@@ -412,6 +463,152 @@ def show_data_sources_panel() -> None:
     st.caption(REMOVED_DATA_SOURCES_NOTE)
 
 
+def show_duration_model_panel() -> None:
+    """Métriques du modèle de durée dédié (MAE vs baselines) + top features."""
+    summary = load_duration_summary(_duration_summary_mtime())
+    if not summary:
+        st.info(
+            "Modèle de durée non entraîné — l'app retombe sur l'heuristique "
+            "`1 + 4p`. Pour l'entraîner : `python run_pipeline.py` "
+            "(étape 5 bis) ou `python -m src.models.train_duration`."
+        )
+        return
+
+    metrics = summary.get("holdout_metrics_h", {})
+    model_m = metrics.get("duration_model") or {}
+    median_m = metrics.get("baseline_median") or {}
+    heur_m = metrics.get("legacy_heuristic") or {}
+    stats = summary.get("target_stats_h", {})
+
+    n_ep = summary.get("n_episodes", "?")
+    st.markdown(
+        f"Régression LightGBM dédiée à la **durée** d'un épisode (h), entraînée "
+        f"sur **{n_ep} épisodes réels** de Lacor (médiane "
+        f"**{stats.get('median', '?')} h**, max **{stats.get('max', '?')} h**). "
+        "Conditionnée aux features au **déclenchement** ; remplace l'heuristique "
+        "`1 + 4p` dans les estimations de durée de l'app."
+    )
+
+    c1, c2, c3 = st.columns(3)
+    mae_model = model_m.get("mae")
+    mae_median = median_m.get("mae")
+    mae_heur = heur_m.get("mae")
+    c1.metric(
+        "MAE — modèle de durée",
+        "n/d" if mae_model is None else f"{mae_model:.2f} h",
+        help="Erreur absolue moyenne sur le hold-out chronologique (plus bas = mieux).",
+    )
+    c2.metric(
+        "MAE — médiane constante",
+        "n/d" if mae_median is None else f"{mae_median:.2f} h",
+        delta=None if (mae_model is None or mae_median is None) else f"{mae_model - mae_median:+.2f} h",
+        delta_color="inverse",
+        help="Baseline : prédire toujours la durée médiane.",
+    )
+    c3.metric(
+        "MAE — ancienne heuristique",
+        "n/d" if mae_heur is None else f"{mae_heur:.2f} h",
+        delta=None if (mae_model is None or mae_heur is None) else f"{mae_model - mae_heur:+.2f} h",
+        delta_color="inverse",
+        help="Baseline : ancienne formule 1 + 4p.",
+    )
+
+    top = summary.get("top_features", {})
+    if top:
+        feats = list(top.items())[:10][::-1]
+        fig = go.Figure(go.Bar(
+            x=[v for _, v in feats],
+            y=[FEATURE_LABELS.get(k, k) for k, _ in feats],
+            orientation="h", marker_color="#9b59b6",
+            text=[f"{v:.0f}" for _, v in feats], textposition="outside",
+            hovertemplate="<b>%{y}</b><br>Importance : %{x:.0f}<extra></extra>",
+        ))
+        fig.update_layout(
+            title=dict(text="Top facteurs de durée (importance LightGBM)", font=dict(size=14)),
+            xaxis=dict(title="Importance"),
+            height=320, margin=dict(l=240, r=60, t=50, b=40),
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig, width="stretch")
+
+
+def show_multisite_panel() -> None:
+    """Validation de généralisation inter-sites (leave-one-site-out, EAGLE-I)."""
+    summary = load_multisite_summary(_multisite_summary_mtime())
+    if not summary:
+        st.info(
+            "Validation multi-sites non disponible — nécessite les coupures réelles "
+            "EAGLE-I (comtés US). Pour la lancer : déposer les bruts EAGLE-I "
+            "(cf. `src/data/ingest_eaglei.py`) puis "
+            "`python run_pipeline.py --multisite`."
+        )
+        return
+
+    roc = summary.get("loso_roc_auc", {})
+    by_site = summary.get("loso_by_site", [])
+    n_sites = summary.get("n_sites", "?")
+    n_feat = summary.get("n_features", "?")
+    baseline = summary.get("single_site_baseline_lacor_to_maricopa_roc")
+
+    st.markdown(
+        f"**Leave-one-site-out** sur **{n_sites} sites à coupures réelles** "
+        f"(Lacor + 8 comtés EAGLE-I), avec **{n_feat} features exogènes** "
+        "(météo + temporel uniquement, sans consommation). Chaque site est prédit "
+        "par un modèle entraîné **uniquement sur les autres** : on **mesure** la "
+        "généralisation inter-réseaux au lieu de la supposer."
+    )
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "ROC-AUC moyen (LOSO)",
+        "n/d" if roc.get("mean") is None else f"{roc['mean']:.3f}",
+        help="Moyenne sur tous les sites. > 0.5 ⇒ le signal météo généralise (partiellement).",
+    )
+    c2.metric(
+        "Plage ROC-AUC",
+        "n/d" if roc.get("min") is None else f"{roc['min']:.2f} – {roc['max']:.2f}",
+        help="Min et max observés selon le site exclu.",
+    )
+    c3.metric(
+        "Baseline mono-site",
+        "n/d" if baseline is None else f"{baseline:.3f}",
+        delta=None if (baseline is None or roc.get("mean") is None) else f"{roc['mean'] - baseline:+.3f}",
+        help="Lacor seul → Maricopa : sans pooling, ~0.5 (proche du hasard).",
+    )
+
+    if by_site:
+        rows = sorted(by_site, key=lambda r: r.get("roc_auc", 0))
+        names = [r["site"] for r in rows]
+        vals = [r.get("roc_auc", 0) for r in rows]
+        colors = ["#2ecc71" if v >= 0.6 else ("#f39c12" if v >= 0.55 else "#e74c3c") for v in vals]
+        fig = go.Figure(go.Bar(
+            x=vals, y=names, orientation="h", marker_color=colors,
+            text=[f"{v:.3f}" for v in vals], textposition="outside",
+            hovertemplate="<b>%{y}</b><br>ROC-AUC : %{x:.3f}<extra></extra>",
+        ))
+        fig.add_vline(x=0.5, line_dash="dash", line_color="#888",
+                      annotation_text="hasard (0.5)", annotation_position="top")
+        if roc.get("mean") is not None:
+            fig.add_vline(x=roc["mean"], line_dash="dot", line_color="#3498db",
+                          annotation_text=f"moyenne ({roc['mean']:.2f})",
+                          annotation_position="bottom right")
+        fig.update_layout(
+            title=dict(text="ROC-AUC par site exclu (leave-one-site-out)", font=dict(size=14)),
+            xaxis=dict(title="ROC-AUC", range=[0, max(0.8, max(vals) * 1.15)]),
+            height=max(320, len(names) * 34),
+            margin=dict(l=200, r=60, t=50, b=40),
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig, width="stretch")
+
+    st.caption(
+        "Modèle **exogène** (météo + calendrier, sans consommation ni "
+        "auto-régression des coupures) : il **ne remplace pas** le modèle hôpital "
+        "complet de Lacor (ROC-AUC ≈ 0.99 intra-site), il quantifie ce que la "
+        "météo seule annonce — et donc le niveau de transfert réaliste entre réseaux."
+    )
+
+
 def compute_shap_local(explainer, row_df: pd.DataFrame, feature_cols: list[str]):
     """Calcule les SHAP values pour une seule ligne et retourne (shap_values_1d, expected)."""
     if explainer is None:
@@ -570,6 +767,59 @@ lacor_df = load_lacor_features(_features_file_mtime())
 feature_cols = get_feature_columns(lacor_df)
 
 HORIZON_MODELS = load_horizon_models(_horizon_models_mtime())
+DURATION_MODEL = load_duration_model(_mtime)
+_duration_summary = load_duration_summary(_duration_summary_mtime())
+if DURATION_MODEL is not None and _duration_summary:
+    _dur_mae = (
+        _duration_summary.get("holdout_metrics_h", {})
+        .get("duration_model", {})
+        .get("mae")
+    )
+    DURATION_NOTE = (
+        f"Durée estimée via **modèle LightGBM** dédié "
+        f"(MAE hold-out {_dur_mae:.2f} h sur épisodes Lacor)."
+        if _dur_mae is not None
+        else "Durée estimée via **modèle LightGBM** dédié (épisodes Lacor)."
+    )
+else:
+    DURATION_NOTE = (
+        "Durée estimée via heuristique **1 + 4p** — lancez "
+        "`python -m src.models.train_duration` pour le modèle dédié."
+    )
+
+
+def _estimate_durations_batch(probas, frame: pd.DataFrame | None) -> np.ndarray:
+    """Durées estimées (h) pour un lot. Modèle de durée dédié si dispo, sinon
+    heuristique `1 + 4p`. Une proba ≤ 0.5 ⇒ 0.5 h (risque négligeable)."""
+    probas = np.asarray(probas, dtype=float)
+    out = np.full(len(probas), 0.5)
+    mask = probas > 0.5
+    if not mask.any():
+        return out
+    if DURATION_MODEL is not None and frame is not None and len(frame) == len(probas):
+        try:
+            feats = DURATION_MODEL.get("features") or feature_cols
+            X = ensure_numeric_feature_frame(frame, feats)
+            d = DURATION_MODEL["model"].predict(X)
+            lo = DURATION_MODEL.get("duration_min_h", 0.5)
+            hi = DURATION_MODEL.get("duration_max_h", 24.0)
+            out[mask] = np.round(np.clip(d, lo, hi)[mask], 1)
+            return out
+        except Exception:
+            pass  # repli heuristique
+    out[mask] = np.round(1.0 + 4.0 * probas[mask], 1)
+    return out
+
+
+def estimate_outage_duration(proba: float, frame: pd.DataFrame | None = None) -> float:
+    """Durée estimée d'une coupure (h) au point considéré.
+
+    `frame` : features brutes (1 ligne) au point d'intérêt — alignées en interne.
+    Modèle de durée dédié (cf. train_duration.py) si disponible, sinon repli sur
+    l'heuristique historique. Voir `DOCUMENTATION_MODELE_ET_PREDICTIONS.md` §14.
+    """
+    one = frame.tail(1) if (frame is not None and len(frame) > 0) else None
+    return float(_estimate_durations_batch([proba], one)[0])
 
 # ── Garde-fou : cohérence des features entre entraînement et inférence ──
 # Si quelqu'un régénère le dataset sans réentraîner (ou inversement), les
@@ -595,7 +845,7 @@ if _model_feats is not None:
         )
     elif extra_in_data:
         st.caption(
-            f"ℹ️ Colonnes ignorées (absentes du modèle) : "
+            f"Colonnes ignorées (absentes du modèle) : "
             f"{', '.join(extra_in_data[:6])}{' …' if len(extra_in_data) > 6 else ''}. "
             "Régénérez les features avec `python run_pipeline.py` pour nettoyer le dataset."
         )
@@ -635,16 +885,25 @@ def forecast_next_outage(
 def site_profile_notes(hkey: str, hinfo: dict) -> list[str]:
     """Notes contextuelles honnêtes selon le site."""
     notes: list[str] = []
-    if hkey == TRAINED_HOSPITAL:
+    target_source = get_target_source(hkey, hinfo)
+    if target_source == "real":
         notes.append(
             "Probabilité **calibrée** du modèle hôpital complet (consommation + "
-            "historique + météo) — site d'entraînement Lacor."
+            "historique + météo) — site d'entraînement Lacor, **coupures réelles "
+            "observées**."
         )
-    else:
+    elif target_source == "synthetic":
         notes.append(
-            "⚠️ **Score illustratif** : modèle entraîné sur **Lacor** appliqué à un "
-            "autre site (profil de consommation emprunté), **non validé** pour ce "
-            "site — la généralisation inter-sites n'est pas démontrée (cf. README)."
+            "**Score illustratif** : charge réelle, coupures simulées à "
+            "l'ingestion (pas de relevé terrain pour ce site). "
+            "Modèle entraîné sur **Lacor** appliqué ici — généralisation "
+            "inter-sites **non démontrée** (cf. README, validation EAGLE-I)."
+        )
+    else:  # cloned
+        notes.append(
+            "**Score illustratif** : aucune coupure observée pour ce site. "
+            "Modèle Lacor appliqué à un profil de consommation "
+            "cloné/redimensionné — **non validé** pour ce site."
         )
     rel = hinfo.get("who_reliability")
     stab = hinfo.get("grid_stability", "moyen")
@@ -663,7 +922,7 @@ def site_profile_notes(hkey: str, hinfo: dict) -> list[str]:
 
 
 _summary_path = MODELS_DIR / "training_summary.json"
-_winner_name = "RandomForest"
+_winner_name = "LightGBM"
 _n_features_train = len(feature_cols)
 _train_scope = None
 if _summary_path.exists():
@@ -678,180 +937,90 @@ if _summary_path.exists():
 # Indique la portée d'entraînement : "real" = modèle entraîné uniquement sur
 # des coupures réellement observées (métriques honnêtes) ; "all" = inclut des
 # coupures synthétiques (métriques globales biaisées).
+_calibrated_exists = (MODELS_DIR / "calibrated_model.joblib").exists() or (
+    MODELS_DIR / "calibrated_rf.joblib"
+).exists()
+if model is not None:
+    if _calibrated_exists:
+        st.sidebar.success(f"Modèle : **{_winner_name}** (calibré)")
+    else:
+        st.sidebar.info(f"Modèle : **{_winner_name}** (brut)")
+
 if _train_scope == "real":
-    st.sidebar.caption("🎯 Entraîné sur **données réelles** (coupures observées)")
+    st.sidebar.caption("Entraînement : coupures réelles (Lacor)")
 elif _train_scope == "all":
-    st.sidebar.caption("⚠️ Entraîné sur **tous** les sites (coupures synthétiques incluses)")
+    st.sidebar.caption("Entraînement : tous les sites (dont coupures simulées)")
 
-st.markdown(
-    f"""
-    <div style='background:linear-gradient(135deg,#1a2530,#2c3e50);
-                color:white;padding:24px 32px;border-radius:14px;
-                margin-bottom:20px'>
-        <div style='display:flex;justify-content:space-between;
-                    align-items:center;flex-wrap:wrap;gap:20px'>
-            <div>
-                <div style='font-size:28px;font-weight:800;line-height:1.1'>
-                    ⚡ Prédiction de coupures d'électricité
-                </div>
-                <div style='font-size:14px;color:#bdc3c7;margin-top:4px'>
-                    Hôpitaux · Données réelles 2022 · Modèle expliqué par SHAP
-                </div>
-            </div>
-            <div style='display:flex;gap:28px;flex-wrap:wrap'>
-                <div>
-                    <div style='font-size:11px;color:#95a5a6;
-                                text-transform:uppercase;letter-spacing:1.2px'>
-                        Modèle
-                    </div>
-                    <div style='font-size:22px;font-weight:700;color:#3498db'>
-                        {_winner_name}
-                    </div>
-                </div>
-                <div>
-                    <div style='font-size:11px;color:#95a5a6;
-                                text-transform:uppercase;letter-spacing:1.2px'>
-                        Features
-                    </div>
-                    <div style='font-size:22px;font-weight:700;color:#2ecc71'>
-                        {_n_features_train}
-                    </div>
-                </div>
-                <div>
-                    <div style='font-size:11px;color:#95a5a6;
-                                text-transform:uppercase;letter-spacing:1.2px'>
-                        Sources
-                    </div>
-                    <div style='font-size:22px;font-weight:700;color:#f39c12'>
-                        {len(DATA_SOURCES)}
-                    </div>
-                </div>
-                <div>
-                    <div style='font-size:11px;color:#95a5a6;
-                                text-transform:uppercase;letter-spacing:1.2px'>
-                        Hôpitaux
-                    </div>
-                    <div style='font-size:22px;font-weight:700;color:#e84393'>
-                        {len(ALL_HOSPITAL_KEYS)}
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ── Sélection de l'hôpital ─────────────────────────────────────────
-
-col_select, col_info = st.columns([1, 2])
-
-with col_select:
-    hospital_options = REAL_HOSPITAL_KEYS
-    hospital_key = st.selectbox(
-        "Hôpital",
-        options=hospital_options,
-        format_func=lambda k: f"{HOSPITAL_DISPLAY[k]['flag']}  {HOSPITAL_DISPLAY[k]['name']} — {HOSPITAL_DISPLAY[k]['location']}",
+if DURATION_MODEL is not None and _duration_summary:
+    _dm = _duration_summary.get("holdout_metrics_h", {}).get("duration_model", {})
+    _mae_d = _dm.get("mae")
+    st.sidebar.caption(
+        "Modèle de durée actif"
+        + (f" (MAE {_mae_d:.2f} h)" if _mae_d is not None else "")
     )
+else:
+    st.sidebar.caption("Durée : heuristique 1 + 4p")
+
+_multisite_summ = load_multisite_summary(_multisite_summary_mtime())
+if _multisite_summ:
+    _roc_m = _multisite_summ.get("loso_roc_auc", {}).get("mean")
+    st.sidebar.caption(
+        f"Validation EAGLE-I (LOSO) : ROC-AUC {_roc_m:.3f}"
+        if _roc_m is not None
+        else "Validation EAGLE-I disponible"
+    )
+
+st.sidebar.divider()
+st.sidebar.subheader("Hôpital")
+_n_real = len(HOSPITAL_BY_SOURCE.get("real", []))
+_n_syn = len(HOSPITAL_BY_SOURCE.get("synthetic", []))
+_n_cloned = len(HOSPITAL_BY_SOURCE.get("cloned", []))
+_filter_labels = {
+    "all": f"Tous ({len(REAL_HOSPITAL_KEYS)})",
+    "real": f"Réel ({_n_real})",
+    "synthetic": f"Charge réelle, coupures simulées ({_n_syn})",
+    "cloned": f"Profil cloné ({_n_cloned})",
+}
+source_filter = st.sidebar.selectbox(
+    "Type de site",
+    options=list(_filter_labels.keys()),
+    format_func=lambda k: _filter_labels[k],
+    key="hospital_source_filter",
+)
+if source_filter == "all":
+    hospital_options = _sorted_hospital_keys(REAL_HOSPITAL_KEYS)
+else:
+    hospital_options = HOSPITAL_BY_SOURCE.get(source_filter, [])
+hospital_key = st.sidebar.selectbox(
+    "Établissement",
+    options=hospital_options,
+    format_func=_hospital_select_label,
+)
 
 hospital = HOSPITAL_DISPLAY[hospital_key]
+_tsrc = get_target_source(hospital_key, hospital)
+_tmeta = TARGET_SOURCE_META[_tsrc]
 
-with col_info:
-    reliability = hospital.get("who_reliability", 50)
-    if reliability < 30:
-        rel_color = "#e74c3c"
-    elif reliability < 55:
-        rel_color = "#f39c12"
-    elif reliability < 80:
-        rel_color = "#3498db"
-    else:
-        rel_color = "#2ecc71"
+st.title("Prédiction de coupures d'électricité")
+st.caption(
+    f"Modèle {_winner_name} · {_n_features_train} variables · "
+    f"entraîné sur Lacor — scores illustratifs hors site réel."
+)
 
-    solar_html = (
-        "<span style='color:#f39c12;font-weight:600'>☀️ Solaire</span>"
-        if hospital.get("has_solar")
-        else "<span style='color:#999'>✕ Pas de solaire</span>"
-    )
-    gen_html = (
-        "<span style='color:#e67e22;font-weight:600'>⚙️ Générateur</span>"
-        if hospital.get("has_generator")
-        else "<span style='color:#999'>✕ Pas de générateur</span>"
-    )
+st.subheader(f"{hospital['name']}")
+st.caption(f"{hospital['location']} · {hospital['type']} · {_tmeta['label']}")
 
-    eric_line = ""
-    if hospital.get("data_source") == "eric":
-        area = hospital.get("floor_area_m2", 0)
-        annual = hospital.get("annual_electricity_kwh", 0)
-        eric_line = (
-            f"<div style='margin-top:6px;font-size:12px;color:#666'>"
-            f"📊 <b>Données ERIC NHS</b> · {area:,} m² · "
-            f"{annual / 1e6:.0f} GWh/an · {annual / area:.0f} kWh/m²"
-            f"</div>"
-        )
-    elif hospital.get("data_source") == "nyc_ll84":
-        area = hospital.get("floor_area_m2", 0)
-        annual = hospital.get("annual_electricity_kwh", 0)
-        eric_line = (
-            f"<div style='margin-top:6px;font-size:12px;color:#666'>"
-            f"📊 <b>NYC Local Law 84</b> · {area:,} m² · "
-            f"{annual / 1e6:.0f} GWh/an · {annual / area:.0f} kWh/m²"
-            f"</div>"
-        )
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Lits", f"{hospital['beds']:,}")
+m2.metric("Charge moy. / max", f"{hospital.get('avg_load_kw', '?'):,} / {hospital.get('max_load_kw', '?'):,} kW")
+m3.metric("Réseau", hospital.get("grid_stability", "—"))
+m4.metric("Fiabilité OMS", f"{hospital.get('who_reliability', 0):.0f} %")
 
-    st.markdown(
-        f"""
-        <div style='border:1px solid #e0e0e0;border-radius:10px;
-                    padding:14px 18px;background:#fafafa'>
-            <div style='font-size:18px;font-weight:700'>
-                {hospital['flag']} {hospital['name']}
-            </div>
-            <div style='font-size:13px;color:#666'>
-                {hospital['location']} · {hospital['type']}
-            </div>
-            <div style='display:flex;gap:24px;margin-top:10px;flex-wrap:wrap;
-                        font-size:13px'>
-                <div><b>{hospital['beds']}</b> lits</div>
-                <div><b>{hospital.get('avg_load_kw', '?'):,}</b> –
-                     <b>{hospital.get('max_load_kw', '?'):,}</b> kW</div>
-                <div>{solar_html}</div>
-                <div>{gen_html}</div>
-                <div>Réseau : <b>{hospital.get('grid_stability', '?')}</b></div>
-                <div>Fiabilité OMS :
-                     <span style='color:{rel_color};font-weight:700'>
-                     {reliability:.0f}%</span></div>
-            </div>
-            {eric_line}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+_profile_notes = site_profile_notes(hospital_key, hospital)
+if _profile_notes:
+    st.info(_profile_notes[0])
 
-# ── Sources de données spécifiques à cet hôpital ───────────────────
 _hospital_sources = detect_hospital_data_sources(hospital_key, hospital)
-
-_sources_html = "".join(
-    f"<li style='margin:4px 0'>{s['emoji']}  {s['label']}</li>"
-    for s in _hospital_sources
-)
-st.markdown(
-    f"""
-    <div style='border:1px solid #e0e0e0;border-radius:10px;
-                padding:12px 18px;background:#fafafa;margin-top:10px'>
-        <div style='font-size:13px;font-weight:700;color:#2c3e50;
-                    margin-bottom:6px'>
-            🗂️  Sources utilisées pour {hospital['name']}
-            <span style='font-weight:400;color:#888'>
-                ({len(_hospital_sources)} sources)
-            </span>
-        </div>
-        <ul style='margin:0;padding-left:20px;font-size:13px;color:#444;
-                   columns:2;column-gap:24px'>
-            {_sources_html}
-        </ul>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ── État réseau local (Electricity Maps, 24 h glissantes) ─────────
 _em_df = load_electricitymaps_snapshot(hospital_key)
@@ -882,12 +1051,7 @@ if _em_df is not None and not _em_df.empty:
         em_24h["hospital_load_kw_est"] = pd.NA
         hospital_now_kw = float("nan")
 
-    st.markdown(
-        f"#### ⚡ Réseau local temps réel — Electricity Maps "
-        f"<span style='color:#888;font-size:13px;font-weight:400'>"
-        f"(zone {_em_zone}, 24 h glissantes)</span>",
-        unsafe_allow_html=True,
-    )
+    st.subheader(f"Réseau régional (Electricity Maps · {_em_zone})")
     em_c1, em_c2, em_c3, em_c4, em_c5 = st.columns(5)
     em_c1.metric("Charge réseau", "N/A" if pd.isna(_em_load) else f"{_em_load:,.0f} MW")
     em_c2.metric(
@@ -954,84 +1118,35 @@ else:
     _em_path = electricitymaps_snapshot_path(hospital_key)
     _ds = hospital.get("data_source", "")
     if _ds in ("eric", "nyc_ll84"):
-        st.info(
-            "Contexte réseau **Electricity Maps** : aucun snapshot local pour cet "
-            "hôpital (données ERIC / NYC LL84 = consommation + météo historiques). "
-            "Pour afficher la charge du réseau régional (NY-ISO ou National Grid), "
-            "définis `ELECTRICITY_MAPS_TOKEN` puis lance "
-            "`python -m src.data.ingest_electricitymaps`.",
-            icon="⚡",
+        st.caption(
+            "Pas de snapshot Electricity Maps pour cet hôpital (ERIC/NYC). "
+            "Token `ELECTRICITY_MAPS_TOKEN` + `python -m src.data.ingest_electricitymaps`."
         )
     elif not _em_path.exists():
-        st.info(
-            "Electricity Maps : fichier snapshot absent. "
-            "Avec un token API (`ELECTRICITY_MAPS_TOKEN`), lance "
-            "`python -m src.data.ingest_electricitymaps`.",
-            icon="⚡",
+        st.caption(
+            "Snapshot Electricity Maps absent — voir `ELECTRICITY_MAPS_TOKEN`."
         )
     else:
-        st.info(
-            "Electricity Maps : fichier présent mais vide ou illisible.",
-            icon="⚡",
+        st.caption("Fichier Electricity Maps présent mais vide ou illisible.")
+
+with st.expander("Informations techniques", expanded=False):
+    doc_tab, val_tab = st.tabs(["Sources et facteurs", "Validation"])
+    with doc_tab:
+        st.caption(
+            f"Modèle {_winner_name} sur Lacor ({_n_features_train} variables). "
+            "Horizons 1/3/6 h : mêmes entrées, cible « coupure dans H h »."
         )
-
-# ── Bandeau « Sources & facteurs du modèle » ───────────────────────
-
-with st.expander("📊  Sources de données & facteurs du modèle", expanded=False):
-    n_model = sum(source_role_model_pipeline(s) for s in DATA_SOURCES)
-    n_context = sum(source_role_context_app(s) for s in DATA_SOURCES)
-    st.markdown(
-        f"**Modèle principal** : **{_winner_name}** sur **Lacor 2022** "
-        f"(**{_n_features_train} features**) — conso, météo, charge, **historique "
-        "des coupures**. Pour « Prochaine coupure », des modèles complémentaires "
-        "1/3/6 h (`nowcast_horizons/`) apprennent explicitement "
-        "**coupure dans les H prochaines heures** avec **les mêmes features**.\n\n"
-        f"**Pipeline :** {len(DATA_SOURCES)} sources actives "
-        f"({n_model} alimentent le modèle, {n_context} en contexte temps réel seulement)."
-    )
-
-    st.markdown("#### Facteurs les plus influents (SHAP global, modèle Lacor)")
-    panel_left, panel_right = st.columns([3, 2])
-    with panel_left:
-        show_top_factors_panel(top_n=12)
-    with panel_right:
-        show_category_breakdown()
-
-    st.markdown("#### Sources de données du pipeline")
-    show_data_sources_panel()
+        show_top_factors_panel(top_n=10)
+        with st.expander("Catalogue des sources", expanded=False):
+            for s in _hospital_sources:
+                st.markdown(f"**{s['label']}** — {s.get('detail', '')}")
+            show_data_sources_panel()
+    with val_tab:
+        show_duration_model_panel()
+        st.divider()
+        show_multisite_panel()
 
 st.divider()
-
-# ── Avertissement si les signaux externes sont neutralisés ────────
-if hospital.get("data_source") == "eric":
-    st.info(
-        f"**Hôpital NHS — données réelles ERIC 2022-23** · "
-        f"La consommation horaire de {hospital['name']} est désagrégée à "
-        "partir des relevés annuels officiels NHS Estates Returns "
-        "Information Collection. La météo locale est récupérée via "
-        "Open-Meteo (latitude/longitude réelles de l'hôpital).",
-        icon="🇬🇧",
-    )
-elif hospital.get("data_source") == "nyc_ll84":
-    st.info(
-        f"**Hôpital NYC — données réelles Local Law 84** · "
-        f"La consommation annuelle de {hospital['name']} est issue du "
-        "registre obligatoire NYC LL84 (data.cityofnewyork.us, dataset "
-        "5zyy-y8am, ~120 hôpitaux NYC publiés). Désagrégation horaire avec "
-        "pic estival (climatisation Con Edison) et météo Open-Meteo "
-        "locale.",
-        icon="🇺🇸",
-    )
-elif hospital.get("data_source") == "africa_grid":
-    st.info(
-        f"**Hôpital Afrique — profil de consommation estimé (temps réel)** · "
-        f"La charge de {hospital['name']} est estimée à partir d'un profil "
-        "hospitalier de référence (Lacor) mis à l'échelle selon la taille "
-        "du site, puis pilotée par la météo locale et le signal réseau "
-        "Electricity Maps (zone locale, charge réseau, mix, carbone). "
-        "Ce ne sont pas des compteurs internes publiés par l'hôpital.",
-        icon="🌍",
-    )
 
 # ── Chargement des données spécifiques à l'hôpital ────────────────────
 try:
@@ -1058,10 +1173,10 @@ for col in feature_cols:
 # ── Onglets ──────────────────────────────────────────────────────────
 
 tab_next, tab_predict, tab_forecast, tab_simulate = st.tabs([
-    "🚨  Prochaine coupure (24 h)",
-    "🔍  Analyse historique (par période)",
-    "🔮  Prévisions J+7",
-    "🎛️  Simulation manuelle",
+    "Prochaine coupure",
+    "Historique",
+    "Prévisions J+7",
+    "Simulation",
 ])
 
 
@@ -1070,13 +1185,9 @@ tab_next, tab_predict, tab_forecast, tab_simulate = st.tabs([
 # ═══════════════════════════════════════════════════════════════════
 
 with tab_next:
-    st.markdown(
-        "<p style='color:#888'>À partir des <b>dernières 24 h</b> de "
-        "<b>consommation, charge, météo</b> et de l'<b>historique des coupures</b>, "
-        "le <b>même modèle Lacor</b> que l'analyse historique estime la probabilité "
-        "d'une coupure dans les <b>1 / 3 / 6 prochaines heures</b> (modèles horizons "
-        "entraînés sur cette cible ; repli = nowcast horaire si absents).</p>",
-        unsafe_allow_html=True,
+    st.caption(
+        "Probabilité de coupure dans les 1, 3 ou 6 prochaines heures "
+        "(fenêtre 24 h de conso + météo + historique)."
     )
 
     if model is None:
@@ -1105,12 +1216,12 @@ with tab_next:
         if _can_realtime:
             src_mode = st.radio(
                 "Source des dernières 24 h",
-                ["🕘 Historique 2022", "📡 Temps réel (Electricity Maps)"],
+                ["Historique 2022", "Temps réel"],
                 index=1 if _is_grid_live else 0,
                 horizontal=True,
                 key=f"next_src_mode_{hospital_key}",
             )
-            realtime = src_mode.startswith("📡")
+            realtime = src_mode == "Temps réel"
         else:
             realtime = False
 
@@ -1134,17 +1245,14 @@ with tab_next:
             if loadshedding_supported(hospital_key):
                 ls = load_loadshedding(hospital_key)
                 if ls is None:
-                    st.info(
-                        "⚡ **Délestage programmé (EskomSePush)** — cause directe des "
-                        "coupures en Afrique du Sud. Pour l'activer, définis la variable "
-                        "d'environnement `ESKOM_SEPUSH_TOKEN` "
-                        "([token gratuit](https://eskomsepush.gumroad.com/l/api))."
+                    st.caption(
+                        "Délestage EskomSePush : définir `ESKOM_SEPUSH_TOKEN` "
+                        "(voir eskomsepush.gumroad.com)."
                     )
                 else:
-                    sev_icon = {"none": "🟢", "low": "🟠", "high": "🔴"}.get(ls["severity"], "⚪")
                     cstage, cnext = st.columns([1, 2])
                     cstage.metric(
-                        f"{sev_icon} Délestage · {ls['name']}",
+                        f"Délestage · {ls['name']}",
                         ls["stage_label"],
                     )
                     if ls["next"]:
@@ -1182,23 +1290,22 @@ with tab_next:
                 )
             else:
                 probs = rt["probs"]
-                ui_step("Étape 2", f"Risque de coupure à venir — zone réseau {rt.get('zone', '?')}")
+                st.subheader("Risque à venir")
                 horizon_labels = {1: "≤ 1 h", 3: "≤ 3 h", 6: "≤ 6 h"}
                 cols = st.columns(len(probs))
                 for col, (h, p) in zip(cols, probs.items()):
-                    tone = "🔴" if p > 0.5 else ("🟠" if p > 0.3 else "🟢")
-                    col.metric(f"{tone} Coupure {horizon_labels.get(h, f'{h}h')}", f"{p:.0%}")
+                    col.metric(f"Coupure {horizon_labels.get(h, f'{h}h')}", f"{p:.0%}")
                 peak_h = max(probs, key=probs.get)
                 peak_p = probs[peak_h]
-                show_risk_result(peak_p, float(peak_h), round(1.0 + peak_p * 4.0, 1) if peak_p > 0.5 else 0.5)
-                st.info(
-                    f"📡 **Temps réel** — zone **{rt.get('zone', '?')}** (Electricity Maps). "
-                    "Conso estimée depuis la charge réseau + météo ; horizons 1/3/6 h "
-                    "via le **modèle Lacor** et la météo prévue Open-Meteo. "
-                    "**Indicatif** hors Lacor."
+                show_risk_result(
+                    peak_p, float(peak_h),
+                    estimate_outage_duration(peak_p, rt["window"]),
+                    duration_note=DURATION_NOTE,
                 )
-                st.divider()
-                ui_step("Étape 3", "Fenêtre 24 h temps réel (charge réseau → conso estimée + météo)")
+                st.caption(
+                    f"Temps réel · zone {rt.get('zone', '?')} · score indicatif hors Lacor."
+                )
+                st.subheader("Fenêtre 24 h")
                 wv = rt["window"].copy()
                 wv["datetime"] = pd.to_datetime(wv["datetime"])
                 fig_w = go.Figure()
@@ -1230,7 +1337,7 @@ with tab_next:
                 _gust = pd.to_numeric(_w.get("wind_gusts_10m"), errors="coerce") if "wind_gusts_10m" in _w.columns else None
                 _cape = pd.to_numeric(_w.get("cape"), errors="coerce") if "cape" in _w.columns else None
                 if _prec is not None or _gust is not None:
-                    with st.expander("🌩️ Contexte orage / convection (météo)", expanded=False):
+                    with st.expander("Contexte orage (météo)", expanded=False):
                         sc = st.columns(3)
                         if _prec is not None:
                             sc[0].metric("Pluie max (fenêtre)", f"{_prec.max():.1f} mm/h")
@@ -1243,10 +1350,8 @@ with tab_next:
                         else:
                             sc[2].metric("CAPE max (convection)", "n/d", help="Non fourni par l'API pour cette zone")
                         st.caption(
-                            "ℹ️ **Contexte uniquement.** Testé en walk-forward sur Lacor : "
-                            "ajouter pluie/rafales **dégrade** la prévision (F1 −0.01 à −0.05). "
-                            "L'orage n'est pas un précurseur fiable des coupures de Lacor "
-                            "(CAPE indisponible en archive, aucun code orage en 2022)."
+                            "Contexte informatif seulement — pluie/rafales non utilisées "
+                            "comme features du modèle Lacor."
                         )
 
         # ── Mode HISTORIQUE 2022 (rejoue les données du site) ──────────
@@ -1254,7 +1359,7 @@ with tab_next:
             nx_dt = pd.to_datetime(df["datetime"])
             nx_min, nx_max = nx_dt.min(), nx_dt.max()
 
-            ui_step("Étape 1", "Choisir le moment d'analyse (« maintenant »)")
+            st.subheader("Point d'analyse")
             st.caption(
                 f"Données disponibles : **{nx_min.strftime('%Y-%m-%d %Hh')}** → "
                 f"**{nx_max.strftime('%Y-%m-%d %Hh')}**. Le modèle lit les 24 h qui "
@@ -1279,7 +1384,7 @@ with tab_next:
             else:
                 ref_ts_eff = pd.to_datetime(window["datetime"]).max()
                 probs = forecast_next_outage(df, ref_ts_eff)
-                ui_step("Étape 2", "Risque de coupure à venir")
+                st.subheader("Risque à venir")
 
                 if not probs:
                     st.info(
@@ -1290,19 +1395,14 @@ with tab_next:
                     horizon_labels = {1: "≤ 1 h", 3: "≤ 3 h", 6: "≤ 6 h"}
                     cols = st.columns(len(probs))
                     for col, (h, p) in zip(cols, probs.items()):
-                        if p > 0.5:
-                            tone = "🔴"
-                        elif p > 0.3:
-                            tone = "🟠"
-                        else:
-                            tone = "🟢"
-                        col.metric(f"{tone} Coupure {horizon_labels.get(h, f'{h}h')}", f"{p:.0%}")
+                        col.metric(f"Coupure {horizon_labels.get(h, f'{h}h')}", f"{p:.0%}")
 
                     peak_h = max(probs, key=probs.get)
                     peak_p = probs[peak_h]
                     show_risk_result(
                         peak_p, float(peak_h),
-                        round(1.0 + peak_p * 4.0, 1) if peak_p > 0.5 else 0.5,
+                        estimate_outage_duration(peak_p, window),
+                        duration_note=DURATION_NOTE,
                     )
 
                     st.info(
@@ -1315,8 +1415,7 @@ with tab_next:
                         "`python -m src.models.train_horizons`)."
                     )
 
-                st.divider()
-                ui_step("Étape 3", "Fenêtre 24 h analysée (conso + météo)")
+                st.subheader("Fenêtre 24 h")
                 wv = window.copy()
                 wv["datetime"] = pd.to_datetime(wv["datetime"])
                 fig_w = go.Figure()
@@ -1360,14 +1459,11 @@ with tab_predict:
     default_end_d = df_max_d
     default_start_d = max(df_min_d, default_end_d - timedelta(days=2))
 
-    st.markdown(
-        f"<p style='color:#888'>Estime le risque de coupure pour <b>{hospital['name']}</b> "
-        f"sur la <b>période de votre choix</b> ({data_label}). "
-        f"Données disponibles : <b>{df_min_d.isoformat()}</b> → <b>{df_max_d.isoformat()}</b>. "
-        f"Seuil d'alerte principal : <b>50%</b>.</p>",
-        unsafe_allow_html=True,
+    st.caption(
+        f"Risque horaire sur la période choisie ({data_label}). "
+        f"Données : {df_min_d.isoformat()} → {df_max_d.isoformat()}."
     )
-    ui_step("Étape 1", "Choisir la période d'analyse")
+    st.subheader("Période")
 
     PRESETS = {
         "Personnalisé": None,
@@ -1479,12 +1575,15 @@ with tab_predict:
                         max_idx = recent["outage_probability"].idxmax()
                         max_proba = recent.loc[max_idx, "outage_probability"]
                         hours_away = abs((recent.loc[max_idx, "datetime"] - recent["datetime"].iloc[-1]).total_seconds() / 3600)
+                        peak_row = recent.loc[[max_idx]]
                     else:
                         max_proba = high_risk.iloc[0]["outage_probability"]
                         hours_away = max(0, (high_risk.iloc[0]["datetime"] - recent["datetime"].iloc[-1]).total_seconds() / 3600)
+                        peak_row = high_risk.iloc[[0]]
 
                     h_notes = site_profile_notes(hospital_key, hospital)
-                    duration = round(1.0 + max_proba * 4.0, 1) if max_proba > 0.5 else 0.5
+                    # Durée via le modèle dédié, conditionnée aux features de l'heure de pic.
+                    duration = estimate_outage_duration(max_proba, peak_row)
                     last_row = ensure_numeric_feature_frame(recent.tail(1), feature_cols).iloc[-1]
                     factors = get_top_factors(model, feature_cols, last_row)
                     last_row_df = pd.DataFrame([last_row])
@@ -1514,13 +1613,13 @@ with tab_predict:
             shap_sv = saved_predict["shap_sv"]
             shap_ev = saved_predict["shap_ev"]
 
-        ui_step("Étape 2", "Résumé du risque estimé")
-        show_risk_result(max_proba, hours_away, duration)
+        st.subheader("Risque estimé")
+        show_risk_result(max_proba, hours_away, duration, duration_note=DURATION_NOTE)
         if h_notes:
             st.info("**Profil de l'hôpital** :\n" + "\n".join(f"- {n}" for n in h_notes))
         st.divider()
 
-        ui_step("Étape 3", "Pourquoi ce niveau de risque ?")
+        st.subheader("Facteurs explicatifs")
         col_factors, col_chart = st.columns([2, 3])
 
         with col_factors:
@@ -1551,7 +1650,7 @@ with tab_predict:
 
         st.divider()
 
-        ui_step("Étape 4", "Contexte de consommation et statistiques")
+        st.subheader("Consommation et statistiques")
         st.subheader(f"Consommation observée — {hospital['name']} ({window_label})")
         consumption_view_mode = st.radio(
             "Affichage du signal",
@@ -1683,13 +1782,7 @@ with tab_predict:
 # ═══════════════════════════════════════════════════════════════════
 
 with tab_forecast:
-    st.markdown(
-        "<p style='color:#888'>Projette le risque de coupure sur les <b>7 prochains jours</b> "
-        "à partir des prévisions météo et du profil énergétique de l'hôpital. "
-        "Seuil d'alerte : <b>50%</b>, seuil critique : <b>70%</b>.</p>",
-        unsafe_allow_html=True,
-    )
-    ui_step("Étape 1", "Vérifier les prévisions météo disponibles")
+    st.caption("Risque horaire sur 7 jours à partir des prévisions météo Open-Meteo.")
 
     forecast_df = load_meteo_forecast(hospital_key, _forecast_file_mtime(hospital_key))
 
@@ -1729,10 +1822,12 @@ with tab_forecast:
                 if max_time.tz is not None else \
                 max(0.0, (max_time - pd.Timestamp.now()).total_seconds() / 3600)
 
-            duration = round(1.0 + max_proba * 4.0, 1) if max_proba > 0.5 else 0.5
+            duration = float(preds.loc[max_idx, "duration_est_h"]) \
+                if "duration_est_h" in preds.columns \
+                else (round(1.0 + max_proba * 4.0, 1) if max_proba > 0.5 else 0.5)
 
-            ui_step("Étape 2", "Résumé du pic de risque prévisionnel")
-            show_risk_result(max_proba, hours_away, duration)
+            st.subheader("Pic de risque")
+            show_risk_result(max_proba, hours_away, duration, duration_note=DURATION_NOTE)
 
             # ── Bandeau : horaire du pic ─────────────────────────
             max_time_display = pd.to_datetime(max_time).strftime("%a %d %b %Y · %Hh")
@@ -1744,7 +1839,7 @@ with tab_forecast:
             st.divider()
 
             # ── Timeline principale ──────────────────────────────
-            ui_step("Étape 3", "Lecture de la trajectoire horaire et du contexte météo")
+            st.subheader("Trajectoire et météo")
             st.subheader("Trajectoire du risque — 7 jours")
             fig = go.Figure()
             fig.add_trace(go.Scatter(
@@ -1792,47 +1887,59 @@ with tab_forecast:
             st.subheader("Synthèse par jour")
             daily = preds.copy()
             daily["date"] = daily["datetime"].dt.date
-            summary = daily.groupby("date").agg(
+            agg_spec = dict(
                 proba_max=("outage_probability", "max"),
                 proba_mean=("outage_probability", "mean"),
                 heures_risque=("outage_probability", lambda x: int((x > 0.5).sum())),
                 temp_max=("temperature_2m", "max"),
                 pluie_mm=("precipitation", "sum"),
-            ).reset_index()
+            )
+            if "duration_est_h" in daily.columns:
+                agg_spec["duration_max_h"] = ("duration_est_h", "max")
+            summary = daily.groupby("date").agg(**agg_spec).reset_index()
 
             def _risk_label(p: float) -> str:
                 if p > 0.7:
-                    return "🔴 Élevé"
+                    return "Élevé"
                 if p > 0.4:
-                    return "🟠 Moyen"
-                return "🟢 Faible"
+                    return "Moyen"
+                return "Faible"
 
             summary["Niveau"] = summary["proba_max"].map(_risk_label)
             summary = summary.sort_values(["proba_max", "proba_mean"], ascending=[False, False]).reset_index(drop=True)
-            summary_display = pd.DataFrame({
+            summary_cols = {
                 "Jour": pd.to_datetime(summary["date"]).dt.strftime("%a %d %b"),
                 "Niveau": summary["Niveau"],
                 "Risque max": summary["proba_max"].map(lambda p: f"{p:.0%}"),
                 "Risque moyen": summary["proba_mean"].map(lambda p: f"{p:.0%}"),
                 "Heures à risque (>50%)": summary["heures_risque"],
-                "Temp. max (°C)": summary["temp_max"].round(1),
-                "Pluie (mm)": summary["pluie_mm"].round(1),
-            })
+            }
+            if "duration_max_h" in summary.columns:
+                summary_cols["Durée est. max (h)"] = summary["duration_max_h"].round(1)
+            summary_cols["Temp. max (°C)"] = summary["temp_max"].round(1)
+            summary_cols["Pluie (mm)"] = summary["pluie_mm"].round(1)
+            summary_display = pd.DataFrame(summary_cols)
             st.dataframe(summary_display, hide_index=True, width="stretch")
 
             # ── Top 5 heures critiques ───────────────────────────
             st.subheader("Top 5 heures les plus à risque")
-            top5 = preds.nlargest(5, "outage_probability")[[
+            top5_cols = [
                 "datetime", "outage_probability", "temperature_2m",
                 "precipitation", "wind_speed_10m",
-            ]].copy()
-            top5_display = pd.DataFrame({
+            ]
+            if "duration_est_h" in preds.columns:
+                top5_cols.append("duration_est_h")
+            top5 = preds.nlargest(5, "outage_probability")[top5_cols].copy()
+            top5_display_cols = {
                 "Date & heure": top5["datetime"].dt.strftime("%a %d %b %Hh"),
                 "Probabilité": top5["outage_probability"].map(lambda p: f"{p:.0%}"),
-                "Temp. (°C)": top5["temperature_2m"].round(1),
-                "Pluie (mm)": top5["precipitation"].round(1),
-                "Vent (km/h)": top5["wind_speed_10m"].round(1),
-            })
+            }
+            if "duration_est_h" in top5.columns:
+                top5_display_cols["Durée est. (h)"] = top5["duration_est_h"].round(1)
+            top5_display_cols["Temp. (°C)"] = top5["temperature_2m"].round(1)
+            top5_display_cols["Pluie (mm)"] = top5["precipitation"].round(1)
+            top5_display_cols["Vent (km/h)"] = top5["wind_speed_10m"].round(1)
+            top5_display = pd.DataFrame(top5_display_cols)
             st.dataframe(top5_display, hide_index=True, width="stretch")
 
 
@@ -1841,20 +1948,12 @@ with tab_forecast:
 # ═══════════════════════════════════════════════════════════════════
 
 with tab_simulate:
-    st.markdown(
-        "<p style='color:#888'>Ajustez les paramètres ci-dessous pour simuler "
-        "un scénario et voir la probabilité de coupure correspondante.</p>",
-        unsafe_allow_html=True,
-    )
-
-    # ── Paramètres de simulation ─────────────────────────────────
-
-    st.subheader("Paramètres de la simulation")
+    st.caption("Ajustez les curseurs pour estimer la probabilité de coupure.")
 
     col_time, col_energy, col_meteo = st.columns(3)
 
     with col_time:
-        st.markdown("**⏰ Temporel**")
+        st.markdown("**Temporel**")
         sim_hour = st.slider("Heure", 0, 23, 14, key="sim_hour")
         sim_month = st.slider("Mois", 1, 12, 6, key="sim_month")
         day_names = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
@@ -1866,7 +1965,7 @@ with tab_simulate:
     h_solar = hospital.get("has_solar", True)
 
     with col_energy:
-        st.markdown("**🔌 Énergie**")
+        st.markdown("**Énergie**")
         sim_load = st.slider(
             "Consommation totale (kW)",
             min_value=10.0, max_value=float(h_max * 1.5),
@@ -1898,7 +1997,7 @@ with tab_simulate:
         )
 
     with col_meteo:
-        st.markdown("**🌡️ Météo**")
+        st.markdown("**Météo**")
         sim_temp = st.slider("Température (°C)", -10.0, 50.0, 25.0, step=0.5, key="sim_temp")
         sim_hum = st.slider("Humidité (%)", 0, 100, 70, key="sim_hum")
         sim_wind = st.slider("Vent (km/h)", 0.0, 100.0, 10.0, step=1.0, key="sim_wind")
@@ -1910,7 +2009,7 @@ with tab_simulate:
 
     # ── Lancer la simulation ─────────────────────────────────────
 
-    if st.button("🎯  Simuler", type="primary", width="stretch", key="btn_simulate"):
+    if st.button("Lancer la simulation", type="primary", width="stretch", key="btn_simulate"):
 
         params = {
             "hour": sim_hour,
@@ -1939,13 +2038,13 @@ with tab_simulate:
                 factors = get_top_factors(model, feature_cols, sim_row.iloc[0])
                 sim_shap_sv, sim_shap_ev = compute_shap_local(shap_explainer, sim_row, feature_cols)
                 hospital_notes = site_profile_notes(hospital_key, hospital)
-                duration = round(1.0 + proba * 4.0, 1) if proba > 0.5 else 0.5
+                duration = estimate_outage_duration(proba, sim_row)
                 hours_away = max(1, round((1 - proba) * 24))
         except Exception as e:
             st.error(f"**Erreur lors de la simulation** : {e}")
             st.stop()
 
-        show_risk_result(proba, hours_away, duration)
+        show_risk_result(proba, hours_away, duration, duration_note=DURATION_NOTE)
 
         if hospital_notes:
             st.info(
@@ -2003,7 +2102,7 @@ with tab_simulate:
 
         r1, r2, r3 = st.columns(3)
         with r1:
-            st.markdown("**⏰ Temporel**")
+            st.markdown("**Temporel**")
             st.markdown(
                 f"- Heure : **{sim_hour}h**\n"
                 f"- Mois : **{sim_month}**\n"
@@ -2011,7 +2110,7 @@ with tab_simulate:
                 f"- Week-end : **{'Oui' if sim_dow >= 5 else 'Non'}**"
             )
         with r2:
-            st.markdown("**🔌 Énergie**")
+            st.markdown("**Énergie**")
             st.markdown(
                 f"- Consommation : **{sim_load} kW**\n"
                 f"- Solaire PV : **{sim_solar} kW**\n"
@@ -2019,7 +2118,7 @@ with tab_simulate:
                 f"- Stérilisation : **{sim_steril} kW**"
             )
         with r3:
-            st.markdown("**🌡️ Météo**")
+            st.markdown("**Météo**")
             st.markdown(
                 f"- Température : **{sim_temp}°C**\n"
                 f"- Humidité : **{sim_hum}%**\n"

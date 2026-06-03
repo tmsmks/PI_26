@@ -1,0 +1,178 @@
+{
+  "url": "http://localhost:8502",
+  "n_hospitals": 10,
+  "n_ok": 10,
+  "n_fail": 0,
+  "hospitals": [
+    {
+      "hospital_option": "🇺🇬 Lacor Hospital — Gulu, Ouganda",
+      "ok": true,
+      "alert_count": 2,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "Modèle Lacor — horizons 1/3/6 h entraînés sur « coupure dans les H prochaines heures » (mêmes features)."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    },
+    {
+      "hospital_option": "🇰🇪 Kenyatta National Hospital — Nairobi, Kenya",
+      "ok": true,
+      "alert_count": 3,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "🌍\n\nHôpital Afrique — profil de consommation estimé (temps réel) · La charge de Kenyatta National Hospital est estimée à partir d'un profil hospitalier de référence (Lacor) mis à l'échelle selon la taille du site, puis pilotée par la météo locale et le signal réseau Electricity Maps (zone locale, charge réseau, mix, carbone). Ce ne sont pas des compteurs internes publiés par l'hôpital."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    },
+    {
+      "hospital_option": "🇪🇹 Tikur Anbessa Specialized Hospital — Addis-Abeba, Éthiopie",
+      "ok": true,
+      "alert_count": 3,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "🌍\n\nHôpital Afrique — profil de consommation estimé (temps réel) · La charge de Tikur Anbessa Specialized Hospital est estimée à partir d'un profil hospitalier de référence (Lacor) mis à l'échelle selon la taille du site, puis pilotée par la météo locale et le signal réseau Electricity Maps (zone locale, charge réseau, mix, carbone). Ce ne sont pas des compteurs internes publiés par l'hôpital."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    },
+    {
+      "hospital_option": "🇿🇦 Groote Schuur Hospital — Le Cap, Afrique du Sud",
+      "ok": true,
+      "alert_count": 4,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "🌍\n\nHôpital Afrique — profil de consommation estimé (temps réel) · La charge de Groote Schuur Hospital est estimée à partir d'un profil hospitalier de référence (Lacor) mis à l'échelle selon la taille du site, puis pilotée par la météo locale et le signal réseau Electricity Maps (zone locale, charge réseau, mix, carbone). Ce ne sont pas des compteurs internes publiés par l'hôpital."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    },
+    {
+      "hospital_option": "🇸🇳 CHU de Fann — Dakar, Sénégal",
+      "ok": true,
+      "alert_count": 3,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "🌍\n\nHôpital Afrique — profil de consommation estimé (temps réel) · La charge de CHU de Fann est estimée à partir d'un profil hospitalier de référence (Lacor) mis à l'échelle selon la taille du site, puis pilotée par la météo locale et le signal réseau Electricity Maps (zone locale, charge réseau, mix, carbone). Ce ne sont pas des compteurs internes publiés par l'hôpital."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    },
+    {
+      "hospital_option": "🇿🇼 Parirenyatwa Group of Hospitals — Harare, Zimbabwe",
+      "ok": true,
+      "alert_count": 3,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "🌍\n\nHôpital Afrique — profil de consommation estimé (temps réel) · La charge de Parirenyatwa Group of Hospitals est estimée à partir d'un profil hospitalier de référence (Lacor) mis à l'échelle selon la taille du site, puis pilotée par la météo locale et le signal réseau Electricity Maps (zone locale, charge réseau, mix, carbone). Ce ne sont pas des compteurs internes publiés par l'hôpital."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    },
+    {
+      "hospital_option": "🇹🇿 Muhimbili National Hospital — Dar es Salaam, Tanzanie",
+      "ok": true,
+      "alert_count": 3,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "🌍\n\nHôpital Afrique — profil de consommation estimé (temps réel) · La charge de Muhimbili National Hospital est estimée à partir d'un profil hospitalier de référence (Lacor) mis à l'échelle selon la taille du site, puis pilotée par la météo locale et le signal réseau Electricity Maps (zone locale, charge réseau, mix, carbone). Ce ne sont pas des compteurs internes publiés par l'hôpital."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    },
+    {
+      "hospital_option": "🇳🇬 Lagos University Teaching Hospital (LUTH) — Lagos, Nigeria",
+      "ok": true,
+      "alert_count": 3,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "🌍\n\nHôpital Afrique — profil de consommation estimé (temps réel) · La charge de Lagos University Teaching Hospital (LUTH) est estimée à partir d'un profil hospitalier de référence (Lacor) mis à l'échelle selon la taille du site, puis pilotée par la météo locale et le signal réseau Electricity Maps (zone locale, charge réseau, mix, carbone). Ce ne sont pas des compteurs internes publiés par l'hôpital."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    },
+    {
+      "hospital_option": "🇬🇭 Korle Bu Teaching Hospital — Accra, Ghana",
+      "ok": true,
+      "alert_count": 3,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "🌍\n\nHôpital Afrique — profil de consommation estimé (temps réel) · La charge de Korle Bu Teaching Hospital est estimée à partir d'un profil hospitalier de référence (Lacor) mis à l'échelle selon la taille du site, puis pilotée par la météo locale et le signal réseau Electricity Maps (zone locale, charge réseau, mix, carbone). Ce ne sont pas des compteurs internes publiés par l'hôpital."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    },
+    {
+      "hospital_option": "🇲🇦 CHU Ibn Sina — Rabat, Maroc",
+      "ok": true,
+      "alert_count": 3,
+      "blocking": [],
+      "warnings": [],
+      "infos_sample": [
+        "Modèle : LightGBM (calibré)",
+        "🌍\n\nHôpital Afrique — profil de consommation estimé (temps réel) · La charge de CHU Ibn Sina est estimée à partir d'un profil hospitalier de référence (Lacor) mis à l'échelle selon la taille du site, puis pilotée par la météo locale et le signal réseau Electricity Maps (zone locale, charge réseau, mix, carbone). Ce ne sont pas des compteurs internes publiés par l'hôpital."
+      ],
+      "has_tabs": true,
+      "has_hero": true,
+      "has_sources": true,
+      "has_target_badge": true,
+      "sidebar_duration": false,
+      "em_panel": true
+    }
+  ]
+}

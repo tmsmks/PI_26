@@ -452,6 +452,60 @@ HOSPITAL_DISPLAY: dict[str, dict] = {
 }
 
 
+# ── Provenance de la cible `is_outage` par site ─────────────────────
+# Honnêteté UX : distinguer EXPLICITEMENT d'où vient (ou non) l'étiquette de
+# coupure d'un site, pour ne jamais présenter un score synthétique comme du
+# terrain. Source de vérité unique, consommée par l'app (notes par site +
+# panneau « sources »).
+#   real      → coupures réellement observées (relevés terrain). Seul : Lacor.
+#   synthetic → étiquettes `is_outage` SYNTHÉTIQUES générées à l'ingestion
+#               (NHS ERIC, NYC LL84) : profils de charge réels mais coupures
+#               simulées ⇒ scores indicatifs, pas des métriques terrain.
+#   cloned    → aucune étiquette propre : le modèle Lacor est appliqué à un
+#               profil de consommation cloné/redimensionné (hôpitaux
+#               `africa_grid`) ⇒ score purement illustratif.
+TARGET_SOURCE_META: dict[str, dict] = {
+    "real": {
+        "label": "Coupures réelles observées (terrain)",
+        "emoji": "🎯", "color": "#2ecc71", "status": "primary",
+        "detail": "is_outage = relevés horaires Lacor 2022",
+    },
+    "synthetic": {
+        "label": "Charge réelle — coupures simulées",
+        "emoji": "🧪", "color": "#f39c12", "status": "synthetic",
+        "detail": "Profil de charge réel (NHS/NYC) ; coupures générées à l'ingestion",
+    },
+    "cloned": {
+        "label": "Aucune coupure étiquetée (profil cloné Lacor)",
+        "emoji": "♻️", "color": "#f39c12", "status": "synthetic",
+        "detail": "Modèle Lacor appliqué à un profil de consommation cloné",
+    },
+}
+
+
+def get_target_source(key: str, info: dict | None = None) -> str:
+    """Provenance de la cible `is_outage` d'un site : real | synthetic | cloned.
+
+    Source de vérité unique. Un override explicite `target_source` posé dans
+    `HOSPITAL_DISPLAY` est respecté ; sinon la valeur est dérivée du
+    `data_source` (lacor → real, eric/nyc_ll84 → synthetic, africa_grid →
+    cloned). Défaut prudent : `synthetic`.
+    """
+    if info is None:
+        info = HOSPITAL_DISPLAY.get(key, {})
+    explicit = info.get("target_source")
+    if explicit in TARGET_SOURCE_META:
+        return explicit
+    if key == "lacor_uganda":
+        return "real"
+    ds = info.get("data_source")
+    if ds in ("eric", "nyc_ll84"):
+        return "synthetic"
+    if ds == "africa_grid":
+        return "cloned"
+    return "synthetic"
+
+
 def build_hospital_locations() -> dict[str, dict]:
     """Sous-ensemble géolocalisé : sites pour lesquels on lance les
     pipelines d'ingestion géo (Open-Meteo, Electricity Maps).

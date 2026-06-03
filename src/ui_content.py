@@ -154,6 +154,9 @@ DATA_SOURCES = [
     {"name": "EskomSePush",
      "icon": "🇿🇦", "type": "Délestage (RSA)", "role": "context_app",
      "desc": "Délestage programmé Cape Town — contexte uniquement (non testable sur Lacor)"},
+    {"name": "EAGLE-I (comtés US)",
+     "icon": "🌍", "type": "Validation inter-sites", "role": "context_app",
+     "desc": "Coupures réseau réelles — expérience leave-one-site-out (onglet Validation)"},
 ]
 
 # Signaux retirés du projet (preuves conservées pour le rapport)

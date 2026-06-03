@@ -23,7 +23,11 @@ from src.utils.config import (
     MODELS_DIR,
     ROOT_DIR,
 )
-from src.utils.hospitals import HOSPITAL_DISPLAY as _HOSPITAL_DISPLAY_FULL
+from src.utils.hospitals import (
+    HOSPITAL_DISPLAY as _HOSPITAL_DISPLAY_FULL,
+    TARGET_SOURCE_META,
+    get_target_source,
+)
 # ui_content est pur (zéro Streamlit, n'importe ni app ni app_data) -> pas de cycle.
 # load_table / apply_feature_engineering_single sont importés localement dans les
 # fonctions concernées.
@@ -81,17 +85,13 @@ def load_model(_mtime: float = 0.0):
 
     if calibrated_path is not None:
         try:
-            model = joblib.load(calibrated_path)
-            st.sidebar.success(f"Modèle : **{winner_name}** (calibré)")
-            return model
+            return joblib.load(calibrated_path)
         except Exception as e:
             st.sidebar.warning(f"Échec du modèle calibré : {e} — fallback sur le brut")
 
     if baseline_path is not None:
         try:
-            model = joblib.load(baseline_path)
-            st.sidebar.info(f"Modèle : **{winner_name}** (brut)")
-            return model
+            return joblib.load(baseline_path)
         except Exception as e:
             st.error(f"**Erreur au chargement du modèle** : {e}")
             st.stop()
@@ -184,6 +184,23 @@ def load_loadshedding(hospital_key: str, _bust: float = 0.0) -> dict | None:
         return loadshedding_for_hospital(hospital_key)
     except Exception as e:  # noqa: BLE001
         st.warning(f"Délestage EskomSePush indisponible : {e}")
+        return None
+
+
+@st.cache_resource
+def load_duration_model(_mtime: float = 0.0) -> dict | None:
+    """Modèle de durée des coupures (régression dédiée, cf. train_duration.py).
+
+    Retourne le bundle {model, features, duration_min_h, duration_max_h, …}
+    ou None si non entraîné (l'app retombe alors sur l'heuristique `1 + 4p`).
+    """
+    path = MODELS_DIR / "duration_model.joblib"
+    if not path.exists():
+        return None
+    try:
+        return joblib.load(path)
+    except Exception as e:  # noqa: BLE001
+        st.sidebar.warning(f"Modèle de durée illisible : {e}")
         return None
 
 
@@ -477,6 +494,18 @@ def detect_hospital_data_sources(hospital_key: str, hospital_info: dict) -> list
     """
     sources: list[dict] = []
 
+    # ── 0. Cible coupures (is_outage) — provenance de l'étiquette ──
+    # Affiché en tête : c'est l'information d'honnêteté la plus importante
+    # (un score n'a pas le même statut selon que la coupure est réelle,
+    # synthétique ou absente). Source de vérité : get_target_source().
+    _tsrc = get_target_source(hospital_key, hospital_info)
+    _tmeta = TARGET_SOURCE_META[_tsrc]
+    sources.append({
+        "label": f"Cible coupures — {_tmeta['label']}",
+        "emoji": _tmeta["emoji"], "color": _tmeta["color"], "status": _tmeta["status"],
+        "detail": _tmeta["detail"],
+    })
+
     # ── 1. Consommation électrique ─────────────────────────────────
     if hospital_info.get("data_source") == "eric":
         eric_code = hospital_info.get("eric_code", "")
@@ -650,6 +679,48 @@ def load_global_shap_importance() -> pd.DataFrame | None:
         df["category"] = df["feature"].apply(get_feature_category)
         df["label"] = df["feature"].apply(feature_label)
         return df
+    except Exception:
+        return None
+
+
+def _duration_summary_mtime() -> float:
+    p = MODELS_DIR / "duration_summary.json"
+    return p.stat().st_mtime if p.exists() else 0.0
+
+
+def _multisite_summary_mtime() -> float:
+    p = MODELS_DIR / "multisite_summary.json"
+    return p.stat().st_mtime if p.exists() else 0.0
+
+
+@st.cache_data
+def load_duration_summary(_mtime: float = 0.0) -> dict | None:
+    """Résumé du modèle de durée (MAE vs baselines, top features, stats).
+
+    Lu depuis models/duration_summary.json (écrit par train_duration.py).
+    Renvoie None si le modèle de durée n'a pas été entraîné.
+    """
+    p = MODELS_DIR / "duration_summary.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+@st.cache_data
+def load_multisite_summary(_mtime: float = 0.0) -> dict | None:
+    """Résumé de la validation de généralisation inter-sites (LOSO).
+
+    Lu depuis models/multisite_summary.json (écrit par multisite_experiment.py).
+    Renvoie None si l'expérience multi-sites (EAGLE-I) n'a pas été lancée.
+    """
+    p = MODELS_DIR / "multisite_summary.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
 

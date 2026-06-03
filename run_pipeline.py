@@ -7,6 +7,8 @@ Script principal : exécute le pipeline complet de bout en bout.
   3. Feature engineering
   4. Entraînement nowcast (RF / XGBoost / LightGBM + SHAP)
   5. Entraînement horizons 1/3/6 h (mêmes features, cible coupure future)
+  5 bis. Modèle de durée des épisodes (LightGBM, Lacor)
+  6. (opt-in `--multisite`) Validation EAGLE-I leave-one-site-out
 """
 
 import logging
@@ -38,6 +40,7 @@ def main(
     save_full_artifacts: bool = True,
     scope: str = "real",
     calibration_method: str = "auto",
+    multisite: bool = False,
 ):
     setup_logging()
     logger.info("=" * 60)
@@ -138,6 +141,31 @@ def main(
     except Exception as e:
         logger.warning("  ⚠ Entraînement horizons échoué : %s", e)
 
+    # ── Étape 5 bis : Modèle de durée dédié ─────────────────────────
+    # Régression sur la durée réelle des épisodes de coupure (Lacor) →
+    # remplace l'heuristique `1 + 4p` de l'app pour l'estimation de durée.
+    logger.info("\n▶ ÉTAPE 5 bis : Modèle de durée des coupures")
+    from src.models.train_duration import run as train_duration
+    try:
+        _run_timed("Modèle de durée", train_duration, scope=scope)
+    except Exception as e:
+        logger.warning("  ⚠ Entraînement durée échoué : %s", e)
+
+    # ── Étape 6 (opt-in) : validation généralisation multi-sites ────
+    # Coupures RÉELLES indépendantes (EAGLE-I, comtés US) → leave-one-site-out.
+    # Mesure la sur-spécialisation au site Lacor au lieu de la supposer.
+    # Opt-in (`--multisite`) car nécessite le téléchargement EAGLE-I (cf.
+    # src/data/ingest_eaglei.py). Sans données → étape ignorée proprement.
+    if multisite:
+        logger.info("\n▶ ÉTAPE 6 : Validation multi-sites (EAGLE-I, leave-one-site-out)")
+        try:
+            from src.data.ingest_eaglei import run as ingest_eaglei
+            _run_timed("Ingestion EAGLE-I", ingest_eaglei)
+            from src.models.multisite_experiment import run as multisite_run
+            _run_timed("Expérience LOSO multi-sites", multisite_run)
+        except Exception as e:
+            logger.warning("  ⚠ Étape multi-sites échouée : %s", e)
+
     logger.info("\n" + "=" * 60)
     logger.info("  PIPELINE TERMINÉ AVEC SUCCÈS")
     logger.info("=" * 60)
@@ -207,6 +235,15 @@ if __name__ == "__main__":
             "none/isotonic/sigmoid = forcer."
         ),
     )
+    parser.add_argument(
+        "--multisite",
+        action="store_true",
+        help=(
+            "Lance l'étape 6 : validation de généralisation inter-sites "
+            "leave-one-site-out sur coupures réelles EAGLE-I (comtés US) + Lacor. "
+            "Nécessite le téléchargement EAGLE-I (cf. src/data/ingest_eaglei.py)."
+        ),
+    )
     args = parser.parse_args()
     main(
         mode=args.mode,
@@ -218,4 +255,5 @@ if __name__ == "__main__":
         save_full_artifacts=not args.no_full_artifacts,
         scope=args.scope,
         calibration_method=args.calibration,
+        multisite=args.multisite,
     )

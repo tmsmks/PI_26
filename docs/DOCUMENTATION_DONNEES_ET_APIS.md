@@ -16,6 +16,7 @@ features et artefacts de modélisation.
 8. [Schéma de fusion des données](#8-schéma-de-fusion-des-données)
 9. [Dictionnaire des variables](#9-dictionnaire-des-variables)
 10. [Modes train / live et fenêtres temporelles](#10-modes-train--live-et-fenêtres-temporelles)
+11. [Interface Streamlit et artefacts affichés](#11-interface-streamlit-et-artefacts-affichés)
 
 ---
 
@@ -27,6 +28,18 @@ du dataset **Lacor Hospital** (relevés terrain). Les autres sources
 construisent des profils de charge comparés (ERIC, NYC) et le contexte météo /
 réseau.
 
+**Provenance de la cible par site (honnêteté UX).** Pour ne jamais présenter un
+score synthétique comme du terrain, chaque site porte une provenance de cible
+explicite — source de vérité unique `get_target_source()` dans
+`src/utils/hospitals.py`, affichée par l'app (badge sous la fiche hôpital, notes `site_profile_notes`,
+1ʳᵉ ligne du panneau « sources ») :
+
+| Provenance | Sites | Sens |
+|------------|-------|------|
+| `real` 🎯 | Lacor | Coupures **réellement observées** (relevés terrain) |
+| `synthetic` 🧪 | NHS ERIC, NYC LL84 | Charge réelle — **coupures simulées** à l'ingestion (badge UI) |
+| `cloned` ♻️ | `africa_grid` | **Aucune étiquette** : modèle Lacor sur profil de consommation cloné |
+
 | Catégorie | Sources principales | Usage |
 |-----------|---------------------|-------|
 | Consommation hospitalière | Lacor (terrain), ERIC NHS (UK), NYC LL84 (USA) | Variable cible (Lacor) + profils de charge (16 sites) |
@@ -34,10 +47,11 @@ réseau.
 | Météorologie prévisionnelle | Open-Meteo Forecast | Onglet « Prévisions J+7 » + fenêtre temps réel |
 | Réseau électrique local | Electricity Maps API | Contexte + estimation conso (`africa_grid`) ; colonnes `em_*` exclues du modèle |
 | Délestage programmé (RSA) | EskomSePush API | Contexte temps réel (Groote Schuur) ; hors modèle Lacor |
+| Coupures réelles multi-sites | EAGLE-I (ORNL) | **Validation** de généralisation inter-sites (leave-one-site-out) ; étape 6 opt-in |
 
 Le pipeline s'exécute via `run_pipeline.py` (CLI : `--mode {train,live}`,
 `--window-days`, `--fast`, `--grid-scale`, `--cv-folds`,
-`--shap-sample-size`, `--no-full-artifacts`, `--scope`).
+`--shap-sample-size`, `--no-full-artifacts`, `--scope`, `--multisite`).
 
 ```
 ingest_consumption  →  ingest_meteo  →  ingest_eric  →  ingest_nyc_ll84
@@ -49,12 +63,15 @@ ingest_consumption  →  ingest_meteo  →  ingest_eric  →  ingest_nyc_ll84
                   build_features (feature engineering)
                             ↓
                   train_baseline (nowcast) → train_horizons (1/3/6 h)
+                            → train_duration (durée épisodes Lacor)
+                            → [opt-in] ingest_eaglei + multisite_experiment (LOSO)
 ```
 
-Les modèles **horizons 1/3/6 h** (onglet « Prochaine coupure », mêmes features
-que le nowcast) sont entraînés à l’étape 5 de `run_pipeline.py` via
-`src/models/train_horizons.py` (voir
-[`DOCUMENTATION_MODELE_ET_PREDICTIONS.md`](DOCUMENTATION_MODELE_ET_PREDICTIONS.md)).
+Les modèles **horizons 1/3/6 h** (onglet « Prochaine coupure ») et le **modèle de
+durée** (tous les onglets qui affichent une durée estimée) sont produits aux
+étapes 5 et 5 bis de `run_pipeline.py`. L’étape 6 (`--multisite`) alimente le
+panneau validation EAGLE-I de l’app. Voir
+[`DOCUMENTATION_MODELE_ET_PREDICTIONS.md`](DOCUMENTATION_MODELE_ET_PREDICTIONS.md).
 
 Toutes les ingestions sont enveloppées dans un `try/except` : si une source
 externe est indisponible, le pipeline continue avec les autres signaux et
@@ -366,6 +383,44 @@ l'app affiche le CAPE des **prévisions** Open-Meteo Forecast (temps réel).
 
 ---
 
+## 7 bis. Source 7 — EAGLE-I (coupures réelles multi-sites, validation)
+
+Le modèle pilote n'a qu'**un seul site à vérité terrain** (Lacor) : les coupures
+des autres hôpitaux du projet (NHS/NYC) sont **synthétiques**. Pour mesurer — au
+lieu de la supposer — la sur-spécialisation au contexte ougandais, on valide la
+généralisation sur des coupures **réelles et indépendantes**.
+
+**EAGLE-I** (*Environment for Analysis of Geo-Located Energy Information*, Oak
+Ridge National Laboratory) publie le nombre de clients sans courant
+(`customers_out`) par **comté américain**, toutes les 15 min, plus un fichier
+`MCC.csv` (max clients/comté) pour normaliser.
+
+| Attribut | Valeur |
+|----------|--------|
+| **Source** | figshare, libre — DOI `10.6084/m9.figshare.24237376` (EAGLE-I 2014-2023) |
+| **Bruts attendus** | `data/raw/eaglei_source/eaglei_outages_<YYYY>.csv` + `MCC.csv` (non versionnés, ~centaines de Mo/an). Colonnes : `run_start_time` + `customers_out` (anciens) ou `sum` (2023+) |
+| **Ingestion** | `src/data/ingest_eaglei.py` → `data/raw/eaglei_<site>.csv` (horaire) |
+| **Comtés** | 8 grands comtés urbains US (Maricopa, Kings, Harris, Cook, Miami-Dade, Los Angeles, King, Orleans) |
+| **Cible** | `is_outage` = `customers_out` > quantile **p90** du site (≈ 10 % de positifs, comparable au taux réel Lacor ≈ 9.7 %) |
+| **Expérience** | `src/models/multisite_experiment.py` → `models/multisite_summary.json` + `models/multisite_loso_by_site.csv` |
+| **Déclenchement** | `python run_pipeline.py --multisite` (étape 6, opt-in) ou modules en direct |
+
+**Méthode (leave-one-site-out).** On empile Lacor (réel) + les 8 comtés (réels),
+on entraîne un LightGBM **exogène** (météo Open-Meteo + calendrier, 29 features,
+**sans** consommation ni auto-régression) sur 8 sites et on prédit le 9ᵉ exclu.
+ROC-AUC moyen > 0,5 ⇒ le signal météo généralise partiellement entre réseaux
+réels (dernière exécution : **≈ 0,63**, vs **0,99** sur Lacor seul → la
+sur-spécialisation est réelle et **chiffrée**).
+
+**Honnêteté méthodologique.** Ce modèle exogène ne **remplace pas** le modèle
+hôpital complet de Lacor (qui exploite charge + historique des coupures, non
+transférables) : il sert uniquement à **borner** ce que la météo seule annonce
+hors du site source. Les bruts EAGLE-I n'étant pas versionnés, l'ingestion
+journalise la marche à suivre et s'arrête proprement s'ils sont absents (même
+contrat que les ingestions réseau).
+
+---
+
 ## 8. Schéma de fusion des données
 
 ```
@@ -453,7 +508,8 @@ réutilisent **le même jeu** (`train_horizons.py`, étape 5 du pipeline).
 
 → Voir [`DOCUMENTATION_MODELE_ET_PREDICTIONS.md`](DOCUMENTATION_MODELE_ET_PREDICTIONS.md) pour le détail des
 features réellement utilisées à l'entraînement (liste calculée
-dynamiquement via `COLS_TO_DROP` dans `src/models/train_baseline.py`).
+dynamiquement via `COLS_TO_DROP` dans `src/utils/config.py`, appliqué par
+`train_baseline.prepare_data()` et `app.get_feature_columns()`).
 
 ---
 
@@ -497,5 +553,34 @@ agrégées par pas horaire, pas de streaming continu seconde par seconde.
 ### Paramètres hors pipeline
 
 La **fiabilité électrique OMS** par pays est codée dans `src/utils/hospitals.py`
-(ajustement d'affichage par profil d'hôpital). Elle n'est pas ingérée comme
-fichier CSV séparé.
+(`who_reliability`, `grid_stability`). Elle alimente les **notes contextuelles**
+de la fiche hôpital (`site_profile_notes`) mais **ne modifie plus** la
+probabilité prédite (ancien `adjust_for_hospital_profile` retiré).
+
+---
+
+## 11. Interface Streamlit et artefacts affichés
+
+Application : `streamlit run app.py` — logique dans [app.py](../app.py),
+chargements dans [src/app_data.py](../src/app_data.py).
+
+| Artefact disque | Affiché dans l’app |
+|-----------------|-------------------|
+| `data/features/features_dataset.csv` (Lacor filtré) | Analyse historique, simulation |
+| `data/raw/meteo_forecast_<key>.csv` | Onglet Prévisions J+7 |
+| `data/raw/electricitymaps_<key>.csv` | Bandeau 24 h + mode temps réel |
+| `models/calibrated_model.joblib` | Probabilité (`site_predict_proba`) |
+| `models/nowcast_horizons/` | Onglet Prochaine coupure (1/3/6 h) |
+| `models/duration_model.joblib` | Durée estimée (`estimate_outage_duration`) |
+| `models/duration_summary.json` | Expander validation → onglet durée |
+| `models/multisite_summary.json` | Expander validation → onglet LOSO EAGLE-I |
+| `models/shap_explainer.joblib` | Waterfall SHAP (analyse + simulation) |
+
+**27 hôpitaux** dans le sélecteur (`REAL_HOSPITAL_KEYS`). **Filtre radio** par type
+de cible (réel / charge réelle–coupures simulées / cloné) au-dessus de la liste.
+Utiliser la **recherche textuelle** du menu (la liste n’affiche qu’une fraction
+des options visibles). Libellés : `get_target_source` + `TARGET_SOURCE_META`.
+
+Catalogue des sources affiché : `DATA_SOURCES` dans `src/ui_content.py` (dont
+EAGLE-I en rôle `context_app` = validation uniquement). Détail UI :
+[§17 de DOCUMENTATION_MODELE_ET_PREDICTIONS.md](DOCUMENTATION_MODELE_ET_PREDICTIONS.md).

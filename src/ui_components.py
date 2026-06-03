@@ -15,14 +15,19 @@ from src.ui_content import FEATURE_CATEGORIES, feature_label, get_feature_catego
 
 def risk_display(proba: float):
     if proba > 0.7:
-        return "ÉLEVÉ", "#e74c3c", "🔴"
+        return "ÉLEVÉ", "#e74c3c", ""
     elif proba > 0.4:
-        return "MOYEN", "#f39c12", "🟠"
+        return "MOYEN", "#f39c12", ""
     else:
-        return "FAIBLE", "#2ecc71", "🟢"
+        return "FAIBLE", "#2ecc71", ""
 
 
-def show_risk_result(proba: float, hours_away: float, duration: float):
+def show_risk_result(
+    proba: float,
+    hours_away: float,
+    duration: float,
+    duration_note: str | None = None,
+):
     """Bloc de résultat de risque (carte mise en avant, réutilisée partout)."""
     risk_level, risk_color, risk_icon = risk_display(proba)
     pct = int(proba * 100)
@@ -43,7 +48,7 @@ def show_risk_result(proba: float, hours_away: float, duration: float):
                     </div>
                     <div style='font-size:36px;font-weight:800;color:{risk_color};
                                 line-height:1.1;margin-top:4px'>
-                        {risk_icon} {risk_level}
+                        {risk_level}
                     </div>
                 </div>
                 <div style='display:flex;gap:32px;flex-wrap:wrap'>
@@ -74,6 +79,8 @@ def show_risk_result(proba: float, hours_away: float, duration: float):
         """,
         unsafe_allow_html=True,
     )
+    if duration_note:
+        st.caption(duration_note)
 
 
 def ui_step(title: str, detail: str = "") -> None:
@@ -90,7 +97,7 @@ def category_badge_html(cat_key: str) -> str:
         f"<span style='background:{cat['color']}22;color:{cat['color']};"
         f"padding:2px 8px;border-radius:10px;font-size:11px;"
         f"font-weight:600;white-space:nowrap'>"
-        f"{cat['emoji']} {cat['label']}</span>"
+        f"{cat['label']}</span>"
     )
 
 
@@ -120,10 +127,7 @@ def show_shap_waterfall(shap_vals, expected_value, feature_cols: list[str], titl
     indices = np.argsort(np.abs(shap_vals))[::-1][:12]
 
     cat_keys = [get_feature_category(feature_cols[i]) for i in indices]
-    features = [
-        f"{FEATURE_CATEGORIES[c]['emoji']}  {feature_label(feature_cols[i])}"
-        for i, c in zip(indices, cat_keys)
-    ]
+    features = [feature_label(feature_cols[i]) for i in indices]
     values = [shap_vals[i] for i in indices]
 
     colors = ["#e74c3c" if v > 0 else "#2ecc71" for v in values]
@@ -155,4 +159,4 @@ def show_shap_waterfall(shap_vals, expected_value, feature_cols: list[str], titl
         font=dict(size=11, color="#888"),
     )
     st.plotly_chart(fig, width="stretch")
-    st.caption("🔴 Rouge : augmente le risque  ·  🟢 Vert : réduit le risque  ·  Emoji : catégorie de donnée")
+    st.caption("Rouge : augmente le risque · Vert : le réduit")

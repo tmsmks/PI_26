@@ -1,115 +1,116 @@
 {
-  "approach": "pool Lacor + 8 comt\u00e9s EAGLE-I, features exog\u00e8nes (m\u00e9t\u00e9o+temporel)",
+  "approach": "pool Lacor + comtés EAGLE-I, features exogènes (météo+temporel)",
   "n_sites": 9,
   "n_features": 29,
   "n_rows": 78840,
+  "eaglei_year": 2023,
   "loso_roc_auc": {
-    "mean": 0.6283,
-    "std": 0.0437,
-    "min": 0.5335,
-    "max": 0.6924
+    "mean": 0.5821,
+    "std": 0.0478,
+    "min": 0.4959,
+    "max": 0.6254
   },
   "loso_by_site": [
     {
-      "site": "Lacor/Uganda (h\u00f4pital)",
+      "site": "Lacor/Uganda (hôpital)",
       "n_test": 8760,
       "outage_rate": 0.0975,
-      "accuracy": 0.8903,
-      "precision": 0.1409,
-      "recall": 0.0246,
-      "f1": 0.0419,
-      "roc_auc": 0.6324,
-      "brier": 0.1296
+      "accuracy": 0.4596,
+      "precision": 0.0972,
+      "recall": 0.548,
+      "f1": 0.1651,
+      "roc_auc": 0.4959,
+      "brier": 0.2857
     },
     {
       "site": "Maricopa/Phoenix AZ",
       "n_test": 8760,
-      "outage_rate": 0.1,
-      "accuracy": 0.8437,
-      "precision": 0.1769,
-      "recall": 0.1541,
-      "f1": 0.1647,
-      "roc_auc": 0.6169,
-      "brier": 0.1457
+      "outage_rate": 0.0999,
+      "accuracy": 0.7608,
+      "precision": 0.1308,
+      "recall": 0.2469,
+      "f1": 0.171,
+      "roc_auc": 0.5828,
+      "brier": 0.1708
     },
     {
       "site": "Kings/Brooklyn NY",
       "n_test": 8760,
-      "outage_rate": 0.1006,
-      "accuracy": 0.8309,
-      "precision": 0.1359,
-      "recall": 0.1271,
-      "f1": 0.1314,
-      "roc_auc": 0.5335,
-      "brier": 0.1444
+      "outage_rate": 0.0993,
+      "accuracy": 0.7275,
+      "precision": 0.1522,
+      "recall": 0.3816,
+      "f1": 0.2176,
+      "roc_auc": 0.624,
+      "brier": 0.1783
     },
     {
       "site": "Harris/Houston TX",
       "n_test": 8760,
-      "outage_rate": 0.1001,
-      "accuracy": 0.8471,
-      "precision": 0.2345,
-      "recall": 0.2326,
-      "f1": 0.2335,
-      "roc_auc": 0.6924,
-      "brier": 0.135
+      "outage_rate": 0.1,
+      "accuracy": 0.6892,
+      "precision": 0.1414,
+      "recall": 0.4155,
+      "f1": 0.211,
+      "roc_auc": 0.6125,
+      "brier": 0.1957
     },
     {
       "site": "Cook/Chicago IL",
       "n_test": 8760,
-      "outage_rate": 0.1002,
-      "accuracy": 0.7442,
-      "precision": 0.1434,
-      "recall": 0.3121,
-      "f1": 0.1965,
-      "roc_auc": 0.6125,
-      "brier": 0.1792
+      "outage_rate": 0.1,
+      "accuracy": 0.7162,
+      "precision": 0.1432,
+      "recall": 0.3687,
+      "f1": 0.2063,
+      "roc_auc": 0.599,
+      "brier": 0.1841
     },
     {
       "site": "Miami-Dade FL",
       "n_test": 8760,
       "outage_rate": 0.1,
-      "accuracy": 0.8814,
-      "precision": 0.3073,
-      "recall": 0.1484,
-      "f1": 0.2002,
-      "roc_auc": 0.6722,
-      "brier": 0.1169
+      "accuracy": 0.6728,
+      "precision": 0.1429,
+      "recall": 0.4543,
+      "f1": 0.2174,
+      "roc_auc": 0.6254,
+      "brier": 0.1967
     },
     {
       "site": "Los Angeles CA",
       "n_test": 8760,
       "outage_rate": 0.1,
-      "accuracy": 0.899,
-      "precision": 0.4262,
-      "recall": 0.0297,
-      "f1": 0.0555,
-      "roc_auc": 0.6408,
-      "brier": 0.1052
+      "accuracy": 0.7299,
+      "precision": 0.1164,
+      "recall": 0.258,
+      "f1": 0.1604,
+      "roc_auc": 0.5616,
+      "brier": 0.1814
     },
     {
       "site": "King/Seattle WA",
       "n_test": 8760,
       "outage_rate": 0.1,
-      "accuracy": 0.8866,
-      "precision": 0.1657,
-      "recall": 0.0331,
-      "f1": 0.0552,
-      "roc_auc": 0.5986,
-      "brier": 0.1167
+      "accuracy": 0.7486,
+      "precision": 0.1123,
+      "recall": 0.2192,
+      "f1": 0.1485,
+      "roc_auc": 0.5177,
+      "brier": 0.1779
     },
     {
       "site": "Orleans/New Orleans LA",
       "n_test": 8760,
-      "outage_rate": 0.1002,
-      "accuracy": 0.8586,
-      "precision": 0.2286,
-      "recall": 0.1731,
-      "f1": 0.197,
-      "roc_auc": 0.6556,
-      "brier": 0.1236
+      "outage_rate": 0.0999,
+      "accuracy": 0.7081,
+      "precision": 0.1359,
+      "recall": 0.3589,
+      "f1": 0.1972,
+      "roc_auc": 0.6198,
+      "brier": 0.1844
     }
   ],
-  "single_site_baseline_lacor_to_maricopa_roc": 0.517,
-  "note": "Validation leave-one-site-out : chaque site est pr\u00e9dit par un mod\u00e8le entra\u00een\u00e9 UNIQUEMENT sur les autres sites. ROC-AUC moyen > 0.5 \u21d2 le signal m\u00e9t\u00e9o g\u00e9n\u00e9ralise (partiellement) entre sites r\u00e9els. Cible binaire ~10 %/site (quantile clients coup\u00e9s pour les comt\u00e9s ; is_outage r\u00e9el pour Lacor). Mod\u00e8le exog\u00e8ne (sans consommation) \u2192 ne remplace PAS le mod\u00e8le h\u00f4pital complet de Lacor (qui exploite charge + auto-r\u00e9gression)."
+  "single_site_baseline_lacor_to_maricopa_roc": 0.5393,
+  "note": "Validation leave-one-site-out : chaque site est prédit par un modèle entraîné UNIQUEMENT sur les autres sites. ROC-AUC moyen > 0.5 ⇒ le signal météo généralise (partiellement) entre sites réels. Cible binaire ~10 %/site (quantile clients coupés pour les comtés ; is_outage réel pour Lacor). Modèle exogène (sans consommation) → ne remplace PAS le modèle hôpital complet de Lacor (qui exploite charge + auto-régression). Régénéré par src/models/multisite_experiment.py."
 }

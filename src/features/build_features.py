@@ -9,20 +9,21 @@ Variables créées :
   - month_sin, month_cos                  (encodage cyclique)
   - is_public_holiday                     (jours fériés ougandais)
 
-  ── Consommation (rolling, kW absolus — EXCLUS du modèle, cf. COLS_TO_DROP) ──
+  ── Consommation (rolling, kW absolus — inclus pour Lacor, cf. COLS_TO_DROP) ──
   - load_rolling_6h                       (moyenne glissante 6h)
   - load_rolling_24h                      (moyenne glissante 24h)
   - load_std_24h                          (écart-type glissant 24h)
   - load_diff_1h                          (variation heure par heure)
   - load_diff_24h                         (variation jour par jour)
 
-  ── Consommation (SANS DIMENSION — servies au modèle, transférables) ──
+  ── Consommation (SANS DIMENSION — complètent les kW absolus) ──
   - load_pct_change_1h                    (variation relative %)
   - peak_ratio                            (charge / moyenne 24h)
   - load_zscore_24h                       (écart à la baseline en σ)
   - load_cv_24h                           (coefficient de variation 24h)
   - load_ratio_6h_24h                     (tendance court/long terme)
   - load_diff_1h_rel / load_diff_24h_rel  (variations / baseline 24h)
+  (Les kW absolus restent dans X pour le pilote Lacor — cf. config.COLS_TO_DROP.)
 
   ── Sources d'énergie ──
   - solar_ratio                           (part du solaire dans la charge)
@@ -108,7 +109,7 @@ def add_load_features(df: pd.DataFrame) -> pd.DataFrame:
     # plusieurs MW. On dérive ici des équivalents normalisés par le profil
     # PROPRE de chaque site, donc réutilisables sur n'importe quel hôpital
     # qui fournit son flux de consommation. Ce sont ces colonnes qui sont
-    # servies au modèle (les kW bruts sont exclus via COLS_TO_DROP).
+    # complètent les kW absolus (conservés pour Lacor — cf. COLS_TO_DROP).
     safe_roll24 = df["load_rolling_24h"].replace(0, np.nan)
     safe_std24 = df["load_std_24h"].replace(0, np.nan)
 

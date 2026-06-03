@@ -1,0 +1,51 @@
+{
+  "type": "outage_duration_regression",
+  "site": "lacor_uganda",
+  "scope": "real",
+  "n_episodes": 279,
+  "n_train": 223,
+  "n_test": 56,
+  "n_features": 54,
+  "target_stats_h": {
+    "mean": 3.06,
+    "median": 2.0,
+    "min": 1.0,
+    "max": 16.0,
+    "p90": 8.0
+  },
+  "holdout_metrics_h": {
+    "duration_model": {
+      "mae": 1.471,
+      "rmse": 2.76,
+      "medae": 0.212
+    },
+    "baseline_median": {
+      "mae": 2.357,
+      "rmse": 3.808,
+      "medae": 1.0
+    },
+    "legacy_heuristic": {
+      "mae": 3.429,
+      "rmse": 3.789,
+      "medae": 3.724
+    }
+  },
+  "top_features": {
+    "load_diff_24h": 95.0,
+    "solar_pv_kw": 78.0,
+    "hours_since_last_outage": 63.0,
+    "load_diff_24h_rel": 63.0,
+    "base_load_ratio": 61.0,
+    "base_load_kw": 59.0,
+    "solar_ratio": 59.0,
+    "avg_outage_duration_7d": 58.0,
+    "outage_trend_7d": 56.0,
+    "sterilization_kw": 54.0,
+    "load_ratio_6h_24h": 51.0,
+    "load_cv_24h": 50.0,
+    "total_load_kw": 48.0,
+    "load_std_24h": 47.0,
+    "outage_frequency_7d": 47.0
+  },
+  "note": "Régression dédiée à la DURÉE d'un épisode de coupure (heures), entraînée sur les épisodes réels de Lacor, conditionnée aux features au déclenchement. Remplace l'heuristique `1 + 4p` dans l'app (repli sur l'heuristique si ce modèle est absent). MAE comparée à deux baselines : médiane constante et heuristique historique."
+}
