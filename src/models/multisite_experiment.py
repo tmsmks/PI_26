@@ -9,13 +9,15 @@ d'autres réseaux réels qu'il n'a jamais vus ?
 
 Protocole — Leave-One-Site-Out (LOSO)
 -------------------------------------
-On rassemble 9 sites à **coupures réelles** :
+On rassemble tous les sites à **coupures réelles** disponibles :
   • Lacor (Ouganda, hôpital, `is_outage` réel 2022) ;
-  • 8 grands comtés urbains américains (coupures réelles EAGLE-I, cf.
+  • les grands comtés urbains américains présents (coupures réelles EAGLE-I, cf.
     `src/data/ingest_eaglei.py`), cible binarisée au quantile p90 par site.
-Pour chaque site, on entraîne un LightGBM sur les 8 AUTRES sites et on prédit
+    Avec le brut national 2023 ingéré, cela fait Lacor + 11 comtés = 12 sites.
+Pour chaque site, on entraîne un LightGBM sur tous les AUTRES sites et on prédit
 le site exclu. ROC-AUC moyen > 0.5 ⇒ le signal **exogène** (météo + temporel)
-généralise (partiellement) entre réseaux réels.
+généralise (partiellement) entre réseaux réels. Les coupures EAGLE-I (UTC) sont
+réalignées sur l'heure locale du comté avant jointure avec la météo Open-Meteo.
 
 Modèle exogène volontairement
 -----------------------------
@@ -143,19 +145,28 @@ def _cached_weather(key: str, lat: float, lon: float, year: int) -> pd.DataFrame
     return df
 
 
-def load_site_frame(site: str, lat: float, lon: float, year: int, outages: pd.DataFrame) -> pd.DataFrame:
+def load_site_frame(
+    site: str, lat: float, lon: float, year: int, outages: pd.DataFrame,
+    tz: str | None = None,
+) -> pd.DataFrame:
     """Assemble un site : cible `is_outage` + 29 features exogènes alignées.
 
     `outages` : DataFrame horaire (`datetime`, `is_outage`) du site.
     Jointure interne sur l'heure calendaire avec la météo du même site/année.
 
-    Note alignement temporel : les deux grilles couvrent la même année à
-    l'heure (8760 h) → la jointure naïve conserve toutes les lignes. EAGLE-I
-    horodate en UTC et Open-Meteo en heure locale (`timezone=auto`) : la paire
-    météo↔coupure porte donc un décalage fixe de quelques heures (sans perte
-    de ligne). Acceptable pour un signal exogène ; à raffiner si l'on veut une
-    causalité météo→coupure stricte.
+    Alignement temporel : Open-Meteo renvoie l'heure **locale** (`timezone=auto`).
+    EAGLE-I horodate en **UTC** → si `tz` est fourni (fuseau IANA du comté), on
+    convertit la grille des coupures UTC → heure locale avant la jointure, pour
+    apparier chaque coupure à la météo de la **même heure locale** (gère l'heure
+    d'été). Quelques heures en bord d'année tombent alors hors jointure (perte
+    négligeable). `tz=None` (ex. Lacor, déjà en heure locale) → aucun décalage.
     """
+    outages = outages.copy()
+    outages["datetime"] = pd.to_datetime(outages["datetime"])
+    if tz is not None:
+        from zoneinfo import ZoneInfo
+        local = outages["datetime"].dt.tz_localize("UTC").dt.tz_convert(ZoneInfo(tz))
+        outages["datetime"] = local.dt.tz_localize(None)
     weather = _cached_weather_key(site, lat, lon, year)
     merged = outages.merge(weather, on="datetime", how="inner")
     feats = build_exog_features(merged)
@@ -188,7 +199,10 @@ def assemble_dataset() -> pd.DataFrame:
             continue
         out = load_csv(path)[["datetime", "is_outage"]]
         out["datetime"] = pd.to_datetime(out["datetime"])
-        frames.append(load_site_frame(county["site"], county["lat"], county["lon"], EAGLEI_YEAR, out))
+        frames.append(load_site_frame(
+            county["site"], county["lat"], county["lon"], EAGLEI_YEAR, out,
+            tz=county.get("tz"),
+        ))
 
     return pd.concat(frames, ignore_index=True)
 

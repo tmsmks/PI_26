@@ -55,18 +55,21 @@ logger = logging.getLogger(__name__)
 # `site` reprend EXACTEMENT le libellé attendu par l'expérience multi-sites
 # (models/multisite_loso_by_site.csv). lat/lon servent à la météo Open-Meteo.
 # fips est le code comté à 5 chiffres (filtre sur la colonne `fips_code`).
+# `tz` est le fuseau IANA du comté : EAGLE-I horodate en UTC alors qu'Open-Meteo
+# renvoie l'heure locale (timezone=auto). On l'utilise pour réaligner coupures et
+# météo sur la même heure locale (cf. src/models/multisite_experiment.py).
 EAGLEI_COUNTIES: list[dict] = [
-    {"key": "maricopa_az",  "site": "Maricopa/Phoenix AZ",      "fips": "04013", "lat": 33.45, "lon": -112.07},
-    {"key": "kings_ny",     "site": "Kings/Brooklyn NY",        "fips": "36047", "lat": 40.65, "lon": -73.95},
-    {"key": "new_york_ny",  "site": "New York/Manhattan NY",    "fips": "36061", "lat": 40.75, "lon": -73.99},
-    {"key": "queens_ny",    "site": "Queens NY",                "fips": "36081", "lat": 40.74, "lon": -73.82},
-    {"key": "bronx_ny",     "site": "Bronx NY",                 "fips": "36005", "lat": 40.85, "lon": -73.87},
-    {"key": "harris_tx",    "site": "Harris/Houston TX",        "fips": "48201", "lat": 29.76, "lon": -95.37},
-    {"key": "cook_il",      "site": "Cook/Chicago IL",          "fips": "17031", "lat": 41.88, "lon": -87.63},
-    {"key": "miamidade_fl", "site": "Miami-Dade FL",            "fips": "12086", "lat": 25.76, "lon": -80.19},
-    {"key": "losangeles_ca","site": "Los Angeles CA",           "fips": "06037", "lat": 34.05, "lon": -118.24},
-    {"key": "king_wa",      "site": "King/Seattle WA",          "fips": "53033", "lat": 47.61, "lon": -122.33},
-    {"key": "orleans_la",   "site": "Orleans/New Orleans LA",   "fips": "22071", "lat": 29.95, "lon": -90.07},
+    {"key": "maricopa_az",  "site": "Maricopa/Phoenix AZ",      "fips": "04013", "lat": 33.45, "lon": -112.07, "tz": "America/Phoenix"},
+    {"key": "kings_ny",     "site": "Kings/Brooklyn NY",        "fips": "36047", "lat": 40.65, "lon": -73.95,  "tz": "America/New_York"},
+    {"key": "new_york_ny",  "site": "New York/Manhattan NY",    "fips": "36061", "lat": 40.75, "lon": -73.99,  "tz": "America/New_York"},
+    {"key": "queens_ny",    "site": "Queens NY",                "fips": "36081", "lat": 40.74, "lon": -73.82,  "tz": "America/New_York"},
+    {"key": "bronx_ny",     "site": "Bronx NY",                 "fips": "36005", "lat": 40.85, "lon": -73.87,  "tz": "America/New_York"},
+    {"key": "harris_tx",    "site": "Harris/Houston TX",        "fips": "48201", "lat": 29.76, "lon": -95.37,  "tz": "America/Chicago"},
+    {"key": "cook_il",      "site": "Cook/Chicago IL",          "fips": "17031", "lat": 41.88, "lon": -87.63,  "tz": "America/Chicago"},
+    {"key": "miamidade_fl", "site": "Miami-Dade FL",            "fips": "12086", "lat": 25.76, "lon": -80.19,  "tz": "America/New_York"},
+    {"key": "losangeles_ca","site": "Los Angeles CA",           "fips": "06037", "lat": 34.05, "lon": -118.24, "tz": "America/Los_Angeles"},
+    {"key": "king_wa",      "site": "King/Seattle WA",          "fips": "53033", "lat": 47.61, "lon": -122.33, "tz": "America/Los_Angeles"},
+    {"key": "orleans_la",   "site": "Orleans/New Orleans LA",   "fips": "22071", "lat": 29.95, "lon": -90.07,  "tz": "America/Chicago"},
 ]
 
 
