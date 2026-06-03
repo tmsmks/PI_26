@@ -9,15 +9,14 @@ Le pipeline d'entraînement est **multi-hôpitaux** :
 - **Lacor Hospital** (Ouganda, historique 15 min rééchantillonné à l'heure) — site de référence
 - **ERIC NHS** (UK, profils horaires par hôpital, 10 sites)
 - **NYC LL84** (USA, profils horaires bâtiment, 5 sites)
-- **Enrichissement contextuel** : météo (Open-Meteo Archive + Forecast) en entrée du modèle ; réseau électrique (Electricity Maps) et délestage (EskomSePush) en **contexte temps réel** dans l’interface (hors features du modèle)
+- **Enrichissement** : météo Open-Meteo Archive ; EAGLE-I comté (NYC) ; **Electricity Maps** (zone au GPS + risque live dans l’app) si `ELECTRICITY_MAPS_TOKEN` ; Forecast / Eskom optionnels
 
 La variable cible est `is_outage` (1 = coupure, 0 = pas de coupure).
 
-> ⚠️ **Seules les coupures de Lacor sont réellement observées.** Les coupures
-> ERIC/NYC sont générées par une formule stochastique (profils de consommation
-> réalistes mais cible synthétique). C'est pourquoi l'entraînement se fait
-> **par défaut sur Lacor uniquement** (`--scope real`) : voir la section
-> *Exécution*. Le multi-hôpitaux complet reste disponible via `--scope all`.
+> ⚠️ **Coupures terrain** : Lacor (hôpital). NYC : **EAGLE-I comté** si ingéré
+> (réseau borough, pas compteur). ERIC : coupures **simulées** à l'ingestion.
+> Entraînement **par défaut sur Lacor seul** (`--scope real`) — voir *Exécution*.
+> Multi-hôpitaux complet : `--scope all`.
 
 ## Structure du projet
 
@@ -48,8 +47,10 @@ PI_26/
 │   │   ├── ingest_eric.py               ← ERIC NHS (10 sites UK, profils horaires)
 │   │   ├── ingest_nyc_ll84.py           ← NYC LL84 (5 sites NYC, profils horaires)
 │   │   ├── ingest_meteo.py              ← Open-Meteo Archive (météo historique)
-│   │   ├── ingest_openmeteo_forecast.py ← Open-Meteo Forecast (prévisions 7 j)
-│   │   ├── ingest_electricitymaps.py    ← Electricity Maps (charge & mix réseau)
+│   │   ├── ingest_eaglei.py             ← EAGLE-I comté (NYC + opt-in multisite)
+│   │   ├── eaglei_outages.py            ← fusion EAGLE-I → profils NYC
+│   │   ├── ingest_openmeteo_forecast.py ← optionnel (prévisions 7 j)
+│   │   ├── ingest_electricitymaps.py    ← zone GPS + charge/mix réseau (pipeline + app)
 │   │   └── preprocessing.py             ← rééchantillonnage + fusion multi-hôpitaux
 │   ├── features/
 │   │   └── build_features.py     ← feature engineering (temporel, charge, météo)
@@ -58,11 +59,19 @@ PI_26/
 │   │   ├── train_horizons.py     ← horizons 1/3/6 h (mêmes features, cible future)
 │   │   └── backtest.py           ← backtest walk-forward mensuel (optionnel)
 │   ├── nowcast_horizons.py       ← inférence « coupure dans les H h »
-│   ├── realtime_forecast.py        ← fenêtre temps réel (Electricity Maps)
+│   ├── realtime_forecast.py        ← variante API horizons (optionnel ; UI → grid_outage_risk)
 │   └── utils/
 │       ├── config.py             ← configuration centralisée (APIs, hôpitaux)
+│       ├── hospitals.py          ← catalogue, `get_target_source`, EAGLE-I comté
+│       ├── public_holidays.py    ← fériés 2022 UGA / GBR / USA par site
+│       ├── local_signals.py      ← profil « données vraiment locales »
+│       ├── em_zone.py            ← résolution zone EM fine (lat/lon)
 │       └── io.py                 ← helpers I/O + logging
-├── app.py                    ← interface Streamlit (4 onglets, 27 hôpitaux)
+│   ├── grid_outage_risk.py       ← score risque réseau + météo (hors modèle ML)
+│   └── ui_components.py          ← jauge risque, SHAP, panneau EM live
+├── scripts/
+│   └── prune_unused_data.py    ← nettoyage disque (bruts EAGLE-I, EM, forecast…)
+├── app.py                    ← interface Streamlit (3 onglets, 27 hôpitaux)
 ├── src/app_data.py           ← chargements cachés (modèles, données, résumés)
 ├── src/ui_content.py         ← libellés features, catalogue des sources
 ├── src/ui_components.py      ← cartes risque, waterfall SHAP
@@ -70,6 +79,15 @@ PI_26/
 ├── requirements.txt          ← dépendances avec versions fixées
 └── README.md
 ```
+
+## Documentation
+
+| Document | Contenu |
+|----------|---------|
+| [README.md](README.md) | Vue d'ensemble, installation, exécution, UI |
+| [docs/DOCUMENTATION_DONNEES_ET_APIS.md](docs/DOCUMENTATION_DONNEES_ET_APIS.md) | Sources, ingestion, fusion, artefacts data |
+| [docs/DOCUMENTATION_MODELE_ET_PREDICTIONS.md](docs/DOCUMENTATION_MODELE_ET_PREDICTIONS.md) | Features, entraînement, calibration, onglets Streamlit |
+| [docs/CDC_UNIFIE_MSE.md](docs/CDC_UNIFIE_MSE.md) | Cahier des charges unifié (périmètre projet) |
 
 ## Installation
 
@@ -117,8 +135,8 @@ Tous les flags CLI sont définis dans `run_pipeline.py` (`--mode {train,live}`, 
 
 `run_pipeline.py` orchestre **5 étapes** + **5 bis** (durée) + **6 opt-in** (EAGLE-I) :
 
-1. **Ingestion** — appelle séquentiellement les scripts `src/data/ingest_*.py`
-2. **Preprocessing** ([src/data/preprocessing.py](src/data/preprocessing.py)) — rééchantillonnage Lacor 15 min → 1 h, fusion multi-hôpitaux (météo + contexte réseau Electricity Maps)
+1. **Ingestion** — Lacor, météo, ERIC, EAGLE-I, NYC, **Electricity Maps** (si token)
+2. **Preprocessing** ([src/data/preprocessing.py](src/data/preprocessing.py)) — rééchantillonnage Lacor 15 min → 1 h, fusion multi-hôpitaux (météo uniquement ; pas de fusion Electricity Maps par défaut)
 3. **Feature engineering** ([src/features/build_features.py](src/features/build_features.py)) — features temporelles cycliques, rolling de charge, interactions météo, historique des coupures
 4. **Entraînement nowcast** ([src/models/train_baseline.py](src/models/train_baseline.py)) :
    1. Split temporel 80/20 **par hôpital** (train réordonné chronologiquement pour une vraie CV temporelle)
@@ -131,13 +149,10 @@ Tous les flags CLI sont définis dans `run_pipeline.py` (`--mode {train,live}`, 
 5 bis. **Modèle de durée** ([src/models/train_duration.py](src/models/train_duration.py)) — régression sur la durée réelle des épisodes Lacor → `models/duration_model.joblib` + `models/duration_summary.json`
 6. **Multi-sites EAGLE-I** (opt-in `--multisite`) — [src/data/ingest_eaglei.py](src/data/ingest_eaglei.py) + [src/models/multisite_experiment.py](src/models/multisite_experiment.py) → `models/multisite_summary.json`
 
-> **Contexte réseau exclu du modèle (`config.EXTERNAL_SIGNAL_PREFIXES`)** — la
-> charge réseau Electricity Maps (`em_*`) est ingérée et affichée comme contexte
-> (et sert la prévision temps réel via l'API live), mais reste **exclue du jeu de
-> features du modèle** : elle n'est pas disponible à l'échelle du site et créerait
-> un décalage entraînement/service. Le modèle s'appuie donc sur des features
-> robustes (météo + charge + temporel + historique des coupures pour le nowcast),
-> identiques en entraînement et en service pour tous les hôpitaux.
+> **Electricity Maps** — ingéré à l’étape 1 si `ELECTRICITY_MAPS_TOKEN` est défini
+> (`data/raw/electricitymaps_*.csv`, cache `em_zone_resolution.json`). Colonnes `em_*`
+> **exclues du modèle ML** ; l’app affiche un **risque contextuel** live (sous-onglet
+> dédié). Voir `src/grid_outage_risk.py`.
 
 ## Métriques et features importantes
 
@@ -208,7 +223,7 @@ prétendre valider Bellevue ou Lagos comme Lacor. Panneau Streamlit : expander
 |---|---|---|
 | **Lacor** | nowcast + horizons 1/3/6 h + durée | Coupures réelles — seul site calibré |
 | **ERIC / NYC** | **même** modèle Lacor | Charge **réelle**, coupures **synthétiques** — illustratif |
-| **`africa_grid`** | **même** modèle Lacor | Profil Lacor **cloné** + météo/EM locales — illustratif |
+| **`africa_grid`** | **même** modèle Lacor | Profil Lacor **cloné** + météo locale — illustratif |
 
 L’app charge **un seul** modèle de probabilité (Lacor). La généralisation du
 **modèle hôpital complet** vers un autre site n’est pas validée ; en revanche
@@ -229,9 +244,9 @@ Le fichier `calibrated_model.joblib` est chargé par défaut dans l'app. Il cont
 | NHS ERIC 2022-23 | Statistiques publiées + profils dérivés | horaire | 10 hôpitaux anglais |
 | NYC LL84 | CSV mensuel + profils horaires dérivés | horaire | 5 hôpitaux NYC |
 | Open-Meteo Archive | API publique | horaire | Météo historique 2022 |
-| Open-Meteo Forecast | API publique | horaire (7 j) | Prévisions pour le mode live / app |
-| Electricity Maps | API token | horaire | Charge & mix réseau de zone (contexte) |
-| EskomSePush | API token | temps réel | Stade de délestage RSA (contexte, sites sud-africains) |
+| Open-Meteo Forecast | API publique | horaire (7 j) | Optionnel (`ingest_openmeteo_forecast.py`) — hors pipeline par défaut |
+| Electricity Maps | API token | horaire | Pipeline + sous-onglet **Réseau & météo (live)** ; hors features ML |
+| EskomSePush | API token | API | Délestage RSA — module `loadshedding.py`, **hors UI** |
 | EAGLE-I (ORNL) | figshare (opt-in) | 15 min → horaire | Validation LOSO inter-sites (`--multisite`) ; panneau app |
 
 ### Données ERIC NHS
@@ -244,9 +259,9 @@ Lancer : `streamlit run app.py` (port par défaut 8501).
 
 ### Sélection des hôpitaux
 
-**27 sites** dans le menu (Lacor + 10 ERIC NHS + 5 NYC LL84 + 11 profils `africa_grid`, dont 1 masqué dans le catalogue global).
+**27 sites** dans le menu (Lacor + 10 ERIC NHS + 5 NYC LL84 + 11 profils `africa_grid` visibles ; **12** au catalogue dont Dhaka masqué).
 
-- **Filtre radio** « Type de cible (coupures) » : Tous · Réel (Lacor) · Charge réelle — coupures simulées (NHS/NYC) · Cloné (`africa_grid`).
+- **Filtre radio** « Type de cible (coupures) » : Tous · Réel (Lacor) · Conso bâtiment, coupures comté (NYC/EAGLE-I) · Charge réelle — coupures simulées (NHS) · Cloné (`africa_grid`).
 - **Liste déroulante** : préfixes `🎯 [Réel]`, `🧪 [Charge réelle, coupures simulées]`, `♻️ [Cloné]` + drapeau + nom. Seules ~10 lignes visibles : **tapez le nom** pour filtrer (`St Thomas`, `Bellevue`, `Lagos`, etc.).
 
 Chaque fiche affiche un **badge de provenance de la cible** (`get_target_source` / `TARGET_SOURCE_META` dans [src/utils/hospitals.py](src/utils/hospitals.py)) :
@@ -254,22 +269,30 @@ Chaque fiche affiche un **badge de provenance de la cible** (`get_target_source`
 | Badge (UI) | Signification |
 |------------|----------------|
 | Coupures réelles observées (terrain) | Lacor — modèle entraîné et évalué sur ce site |
-| Charge réelle — coupures simulées | ERIC / NYC — conso réelle, étiquettes `is_outage` simulées à l’ingestion |
+| Conso bâtiment + coupures comté (EAGLE-I) | NYC LL84 — conso LL84 ; `is_outage` = réseau du borough/comté si EAGLE-I ingéré |
+| Charge réelle — coupures simulées | ERIC — conso réelle, étiquettes `is_outage` simulées à l’ingestion |
 | Aucune coupure étiquetée (profil cloné Lacor) | `africa_grid` — profil Lacor cloné/redimensionné, score illustratif |
 
 ### Onglets ([app.py](app.py))
 
+**3 onglets principaux** :
+
 | Onglet | Rôle |
 |--------|------|
-| **Prochaine coupure (24 h)** | P(coupure) à 1 / 3 / 6 h (`models/nowcast_horizons/`) ; historique 2022 ou temps réel (Electricity Maps) pour Lacor et `africa_grid` |
-| **Analyse historique** | Période au choix, courbe de risque horaire, SHAP, stats conso/coupures |
-| **Prévisions J+7** | Risque + **durée estimée** heure par heure (`duration_model.joblib`) |
-| **Simulation manuelle** | 13 curseurs → proba + durée + jauge + SHAP ; stress hors distribution si valeurs extrêmes |
+| **Prochaine coupure** | 2 **sous-onglets** (voir ci-dessous) |
+| **Historique** | Période au choix, courbe de risque horaire, SHAP, stats conso/coupures |
+| **Simulation** | 13 curseurs → proba + durée + jauge + SHAP |
+
+**Sous-onglets « Prochaine coupure »** :
+
+| Sous-onglet | Rôle |
+|-------------|------|
+| **Réseau & météo (live)** | Zone Electricity Maps au **point GPS** + météo récente → score de risque contextuel 0–100 % (`grid_outage_risk.py`) |
+| **Modèle 1 / 3 / 6 h (replay)** | Date/heure sur données 2022 → P(coupure) à 1 / 3 / 6 h (`nowcast_horizons/`) + fenêtre 24 h conso/météo |
 
 ### Panneaux transverses
-
-- **Bandeau Electricity Maps** (24 h) : charge réseau, stress vs moyenne, conso estimée, carbone, mix.
 - **Expander « Sources & facteurs »** : SHAP global, catalogue des sources ([src/ui_content.py](src/ui_content.py)).
+- **Expander « Données vraiment locales »** : profil honnête (`local_signals.py`) + courbe EAGLE-I (NYC).
 - **Expander « Validation & robustesse »** : modèle de durée (`duration_summary.json`) et LOSO EAGLE-I (`multisite_summary.json`).
 - **Sidebar** : modèle gagnant, scope `real`/`all`, statut durée, ROC-AUC LOSO si disponible.
 - **Garde-fou features** : alerte si désynchronisation dataset ↔ `feature_names_in_`.
@@ -278,37 +301,58 @@ Couche de chargement : [src/app_data.py](src/app_data.py). Détail calculs : [do
 
 ## Hôpitaux couverts
 
-Le sélecteur Streamlit propose **27 hôpitaux** : Lacor, 10 NHS ERIC, 5 NYC LL84 et les profils `africa_grid` visibles (charge estimée + réseau live pour « Prochaine coupure »).
+Le sélecteur Streamlit propose **27 hôpitaux** : Lacor, 10 NHS ERIC, 5 NYC LL84 et les profils `africa_grid` visibles.
+
+**Granularité « locale » (honnête)** — voir `src/utils/local_signals.py` :
+| Signal | Lacor | ERIC / NYC (conso) | NYC (coupures) | `africa_grid` |
+|--------|-------|---------------------|----------------|---------------|
+| Consommation | Compteur terrain | Profil bâtiment horaire | Profil bâtiment (LL84) | Profil cloné Lacor |
+| Coupures | Relevés terrain | Simulées à l'ingestion | **EAGLE-I comté** (borough) si ingéré | Aucune étiquette locale |
+| Météo | lat/lon site | lat/lon site | lat/lon site | lat/lon site |
+| Risque réseau (EM zone GPS) | Live UI | Live UI | Live UI | Live UI |
+
+Les hôpitaux NYC sont rattachés à leur comté EAGLE-I (`eaglei_county_key` dans `hospitals.py`) : coupures réelles au niveau borough/comté si `data/raw/eaglei_<comté>.csv` est présent.
 
 | Catégorie | Nb | Hôpitaux |
 |---|---|---|
 | Référence (terrain) | 1 | Lacor (Ouganda) |
 | ERIC NHS (UK) | 10 | St Thomas', Guy's, John Radcliffe, Addenbrooke's, Manchester Royal, Leeds General, Birmingham Heartlands, Royal Victoria Newcastle, Royal Devon, King's College |
 | NYC LL84 (USA) | 5 | Bellevue, NYU Tisch, NYP Brooklyn Methodist, Elmhurst, Lincoln |
-| Profils estimés `africa_grid` | 12 | Kenyatta, Tikur Anbessa, Groote Schuur, Dhaka, Fann, Parirenyatwa, Muhimbili, LUTH Lagos, Korle Bu, Ibn Sina, Kasr Al Ainy, CHUK Kigali |
+| Profils estimés `africa_grid` | 11 visibles (+ Dhaka masqué) | Kenyatta, Tikur Anbessa, Groote Schuur, Fann, Parirenyatwa, Muhimbili, LUTH Lagos, Korle Bu, Ibn Sina, Kasr Al Ainy, CHUK Kigali |
 
-Le fichier [src/utils/config.py](src/utils/config.py) référence les coordonnées des sites (`HOSPITAL_LOCATIONS`) utilisés par les ingestions géo-localisées (Open-Meteo, Electricity Maps). Les profils `africa_grid` clonent le profil temporel de Lacor mis à l'échelle (`avg_load_kw`) puis y injectent météo locale + Electricity Maps.
+Le fichier [src/utils/config.py](src/utils/config.py) dérive `HOSPITAL_LOCATIONS` du catalogue (`hospitals.py`). Les profils `africa_grid` clonent Lacor + météo locale. **EM** = contexte réseau au point GPS (pas la conso du bâtiment).
 
 ## Facteurs utilisés (features)
 
-Le dataset de features compte environ 76 colonnes après engineering ; le modèle en utilise **54** numériques, sélectionnées via `COLS_TO_DROP` dans `src/utils/config.py`.
+Le dataset de features compte environ **74 colonnes** après engineering (sans `em_*`) ; le modèle en utilise **54** numériques, sélectionnées via `COLS_TO_DROP` dans `src/utils/config.py`.
 
 Familles de facteurs effectivement utilisées :
 
 - **Charge/énergie** : `total_load_kw`, `solar_pv_kw`, `base_load_kw`, `load_rolling_*`, `load_diff_*`, `solar_ratio`, `peak_ratio`, `base_load_ratio`, etc.
 - **Historique coupures** : `hours_since_last_outage`, `last_outage_duration_h`, `outage_frequency_7d`, `avg_outage_duration_7d`, `outage_trend_7d` (toutes calculées avec un `shift(1)` par hôpital pour éviter le leakage)
-- **Temporels** : `hour`, `day_of_week`, `month`, `is_weekend`, `is_public_holiday`, encodages cycliques (`hour_sin/cos`, `month_sin/cos`)
+- **Temporels** : `hour`, `day_of_week`, `month`, `is_weekend`, `is_public_holiday` (calendrier 2022 du **pays du site** : UGA / GBR / USA via `public_holidays.py`), encodages cycliques (`hour_sin/cos`, `month_sin/cos`)
 - **Météo** : température, humidité, point de rosée, vent (vitesse + rafales), pluie, pression, rayonnement, CAPE, weathercode + interactions (`temp_humidity_interaction`, `wind_precipitation_interaction`, `heat_stress`, `solar_available`)
 - **Météo avancée** : `cloud_cover_pct`, `visibility_m`, `evapotranspiration`, `rain_intensity`, `thermal_amplitude_24h`, `humidity_change_3h`, `pressure_change_3h`
-- **Contexte réseau (hors modèle)** : variables Electricity Maps `em_*` (zone, charge MW, intensité carbone gCO₂/kWh, % renouvelable / fossile / bas carbone) — ingérées et affichées, mais exclues du jeu de features.
+- **Electricity Maps (`em_*`)** : ingérées en CSV si token ; **exclues** du vecteur d’entraînement (`EXTERNAL_SIGNAL_PREFIXES`).
 
 > **Horizons 1/3/6 h** ([src/models/train_horizons.py](src/models/train_horizons.py)) : même jeu de features que le nowcast, cible = coupure dans les H prochaines heures. Entraînés automatiquement à l’étape 5 de `run_pipeline.py`.
 
 ## Temps réel : périmètre exact
 
-Le système n'est **pas** un flux streaming strict (seconde par seconde). Il fonctionne en :
+| Composant | Live ? | Détail |
+|-----------|--------|--------|
+| Sous-onglet **Réseau & météo** | Oui (API EM + météo) | Score **indicatif** ; cache 15 min ; token `ELECTRICITY_MAPS_TOKEN` |
+| Sous-onglet **Modèle 1/3/6 h** | Non (replay 2022) | Même modèle Lacor ; date/heure sur jeu hospitalier chargé |
+| **Historique / Simulation** | Replay | Données locales du site |
+| **EskomSePush** | Hors UI | Module `loadshedding.py` (contexte RSA) |
 
-- **Mode `train`** : données historiques (principalement 2022).
-- **Mode `live`** : fenêtre glissante récente (`--window-days`) avec rafraîchissement par appels API.
+Pipeline `--mode live` : rafraîchit météo + Electricity Maps (24 h glissantes).
 
-On parle donc de **quasi temps réel** / **near real-time** : données récentes agrégées par pas horaire, pas de streaming continu.
+```bash
+export ELECTRICITY_MAPS_TOKEN="…"
+streamlit run app.py
+```
+
+Nettoyage disque : `python scripts/prune_unused_data.py` (optionnel ; supprime aussi les CSV EM si vous ne les utilisez plus).
+
+`src/realtime_forecast.py` : variante API pour inférence horizons live ; l’UI standard passe par `grid_outage_risk.py` + sous-onglet replay.

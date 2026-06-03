@@ -95,6 +95,15 @@ def _legacy_heuristic_duration(proba: np.ndarray) -> np.ndarray:
 
 
 def run(scope: str = "real") -> dict:
+    """Régression durée d'épisode sur **Lacor seul**.
+
+    ``scope`` est traceabilité pipeline uniquement ; les lignes utilisées
+    sont toujours ``df[df['hospital'] == LACOR]``.
+    """
+    if scope == "all":
+        logger.warning(
+            "train_duration : scope='all' ignoré — entraînement toujours sur Lacor."
+        )
     t0 = perf_counter()
     df = load_table(FEATURES_DIR / "features_dataset.csv")
     df["datetime"] = pd.to_datetime(df["datetime"])

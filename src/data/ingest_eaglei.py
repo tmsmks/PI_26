@@ -58,6 +58,9 @@ logger = logging.getLogger(__name__)
 EAGLEI_COUNTIES: list[dict] = [
     {"key": "maricopa_az",  "site": "Maricopa/Phoenix AZ",      "fips": "04013", "lat": 33.45, "lon": -112.07},
     {"key": "kings_ny",     "site": "Kings/Brooklyn NY",        "fips": "36047", "lat": 40.65, "lon": -73.95},
+    {"key": "new_york_ny",  "site": "New York/Manhattan NY",    "fips": "36061", "lat": 40.75, "lon": -73.99},
+    {"key": "queens_ny",    "site": "Queens NY",                "fips": "36081", "lat": 40.74, "lon": -73.82},
+    {"key": "bronx_ny",     "site": "Bronx NY",                 "fips": "36005", "lat": 40.85, "lon": -73.87},
     {"key": "harris_tx",    "site": "Harris/Houston TX",        "fips": "48201", "lat": 29.76, "lon": -95.37},
     {"key": "cook_il",      "site": "Cook/Chicago IL",          "fips": "17031", "lat": 41.88, "lon": -87.63},
     {"key": "miamidade_fl", "site": "Miami-Dade FL",            "fips": "12086", "lat": 25.76, "lon": -80.19},

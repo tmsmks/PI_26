@@ -135,6 +135,17 @@ def _fit_calibrated(X: pd.DataFrame, y: pd.Series, template) -> tuple:
 
 
 def run(scope: str = "real", fast_mode: bool = False) -> dict:
+    """Horizons 1/3/6 h sur **Lacor seul** (mêmes features que le nowcast).
+
+    ``scope`` est seulement une trace du run pipeline (``real`` / ``all``) ;
+    les données d'entraînement restent ``df[df['hospital'] == LACOR]``.
+    Un ``scope='all'`` sans filtrage Lacor ici serait incohérent — voir
+    ``train_baseline`` pour le filtrage multi-hôpitaux.
+    """
+    if scope == "all":
+        logger.warning(
+            "train_horizons : scope='all' ignoré — entraînement toujours sur Lacor."
+        )
     t0 = perf_counter()
     summary_path = MODELS_DIR / "training_summary.json"
     if not summary_path.exists():

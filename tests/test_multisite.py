@@ -24,6 +24,7 @@ from src.utils.hospitals import (
     HOSPITAL_DISPLAY,
     TARGET_SOURCE_META,
     get_target_source,
+    hospital_label,
 )
 
 
@@ -32,7 +33,7 @@ def test_target_source_taxonomy():
     assert get_target_source("lacor_uganda") == "real"
     # NHS ERIC et NYC LL84 = étiquettes synthétiques.
     assert get_target_source("st_thomas_nhs") == "synthetic"
-    assert get_target_source("nyc_bellevue") == "synthetic"
+    assert get_target_source("nyc_bellevue") == "county_network"
     # africa_grid = profil cloné, aucune étiquette.
     assert get_target_source("kenyatta_kenya") == "cloned"
 
@@ -47,6 +48,13 @@ def test_every_hospital_has_known_target_source():
     # Tout site du catalogue a une provenance reconnue (pas de trou).
     for key, info in HOSPITAL_DISPLAY.items():
         assert get_target_source(key, info) in TARGET_SOURCE_META
+
+
+def test_every_hospital_has_flag_in_label():
+    for info in HOSPITAL_DISPLAY.values():
+        flag = (info.get("flag") or "").strip()
+        assert flag, info.get("name")
+        assert flag in hospital_label(info)
 
 
 def test_normalize_fips_pads_to_five():

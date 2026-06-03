@@ -1,116 +1,72 @@
 {
   "approach": "pool Lacor + comtés EAGLE-I, features exogènes (météo+temporel)",
-  "n_sites": 9,
+  "n_sites": 5,
   "n_features": 29,
-  "n_rows": 78840,
+  "n_rows": 43800,
   "eaglei_year": 2023,
   "loso_roc_auc": {
-    "mean": 0.5821,
-    "std": 0.0478,
-    "min": 0.4959,
-    "max": 0.6254
+    "mean": 0.605,
+    "std": 0.0913,
+    "min": 0.4519,
+    "max": 0.6752
   },
   "loso_by_site": [
     {
       "site": "Lacor/Uganda (hôpital)",
       "n_test": 8760,
       "outage_rate": 0.0975,
-      "accuracy": 0.4596,
-      "precision": 0.0972,
-      "recall": 0.548,
-      "f1": 0.1651,
-      "roc_auc": 0.4959,
-      "brier": 0.2857
-    },
-    {
-      "site": "Maricopa/Phoenix AZ",
-      "n_test": 8760,
-      "outage_rate": 0.0999,
-      "accuracy": 0.7608,
-      "precision": 0.1308,
-      "recall": 0.2469,
-      "f1": 0.171,
-      "roc_auc": 0.5828,
-      "brier": 0.1708
+      "accuracy": 0.4111,
+      "precision": 0.0837,
+      "recall": 0.507,
+      "f1": 0.1437,
+      "roc_auc": 0.4519,
+      "brier": 0.302
     },
     {
       "site": "Kings/Brooklyn NY",
       "n_test": 8760,
       "outage_rate": 0.0993,
-      "accuracy": 0.7275,
-      "precision": 0.1522,
-      "recall": 0.3816,
-      "f1": 0.2176,
-      "roc_auc": 0.624,
-      "brier": 0.1783
+      "accuracy": 0.763,
+      "precision": 0.2,
+      "recall": 0.4621,
+      "f1": 0.2792,
+      "roc_auc": 0.6752,
+      "brier": 0.1617
     },
     {
-      "site": "Harris/Houston TX",
+      "site": "New York/Manhattan NY",
       "n_test": 8760,
-      "outage_rate": 0.1,
-      "accuracy": 0.6892,
-      "precision": 0.1414,
-      "recall": 0.4155,
-      "f1": 0.211,
-      "roc_auc": 0.6125,
-      "brier": 0.1957
+      "outage_rate": 0.0968,
+      "accuracy": 0.7385,
+      "precision": 0.1617,
+      "recall": 0.4068,
+      "f1": 0.2315,
+      "roc_auc": 0.5996,
+      "brier": 0.1805
     },
     {
-      "site": "Cook/Chicago IL",
+      "site": "Queens NY",
       "n_test": 8760,
-      "outage_rate": 0.1,
-      "accuracy": 0.7162,
-      "precision": 0.1432,
-      "recall": 0.3687,
-      "f1": 0.2063,
-      "roc_auc": 0.599,
-      "brier": 0.1841
+      "outage_rate": 0.0997,
+      "accuracy": 0.7769,
+      "precision": 0.2074,
+      "recall": 0.4387,
+      "f1": 0.2816,
+      "roc_auc": 0.6723,
+      "brier": 0.156
     },
     {
-      "site": "Miami-Dade FL",
+      "site": "Bronx NY",
       "n_test": 8760,
-      "outage_rate": 0.1,
-      "accuracy": 0.6728,
-      "precision": 0.1429,
-      "recall": 0.4543,
-      "f1": 0.2174,
-      "roc_auc": 0.6254,
-      "brier": 0.1967
-    },
-    {
-      "site": "Los Angeles CA",
-      "n_test": 8760,
-      "outage_rate": 0.1,
-      "accuracy": 0.7299,
-      "precision": 0.1164,
-      "recall": 0.258,
-      "f1": 0.1604,
-      "roc_auc": 0.5616,
-      "brier": 0.1814
-    },
-    {
-      "site": "King/Seattle WA",
-      "n_test": 8760,
-      "outage_rate": 0.1,
-      "accuracy": 0.7486,
-      "precision": 0.1123,
-      "recall": 0.2192,
-      "f1": 0.1485,
-      "roc_auc": 0.5177,
-      "brier": 0.1779
-    },
-    {
-      "site": "Orleans/New Orleans LA",
-      "n_test": 8760,
-      "outage_rate": 0.0999,
-      "accuracy": 0.7081,
-      "precision": 0.1359,
-      "recall": 0.3589,
-      "f1": 0.1972,
-      "roc_auc": 0.6198,
-      "brier": 0.1844
+      "outage_rate": 0.0995,
+      "accuracy": 0.7626,
+      "precision": 0.1641,
+      "recall": 0.3383,
+      "f1": 0.221,
+      "roc_auc": 0.6259,
+      "brier": 0.1643
     }
   ],
-  "single_site_baseline_lacor_to_maricopa_roc": 0.5393,
+  "single_site_baseline_lacor_to_maricopa_roc": NaN,
   "note": "Validation leave-one-site-out : chaque site est prédit par un modèle entraîné UNIQUEMENT sur les autres sites. ROC-AUC moyen > 0.5 ⇒ le signal météo généralise (partiellement) entre sites réels. Cible binaire ~10 %/site (quantile clients coupés pour les comtés ; is_outage réel pour Lacor). Modèle exogène (sans consommation) → ne remplace PAS le modèle hôpital complet de Lacor (qui exploite charge + auto-régression). Régénéré par src/models/multisite_experiment.py."
 }

@@ -36,7 +36,7 @@ from src.utils.hospitals import HOSPITAL_DISPLAY, build_hospital_locations  # no
 
 HOSPITAL_LOCATIONS = build_hospital_locations()
 
-# ── Open-Meteo Forecast (prédictions futures pour l'app Streamlit) ──
+# ── Open-Meteo Forecast (optionnel — hors run_pipeline par défaut) ──
 METEO_FORECAST_BASE = "https://api.open-meteo.com/v1/forecast"
 METEO_FORECAST_DAYS = 7
 
@@ -115,8 +115,8 @@ HOSPITAL_ELECTRICITY_ZONES = {
 #
 # Honnêteté : ce signal ne concerne QUE les sites sud-africains. Il ne peut pas
 # être testé sur Lacor (Ouganda, réseau UMEME) faute de calendrier équivalent.
-# Il est donc exposé comme CONTEXTE temps réel dans l'app (pas une feature du
-# modèle entraîné sur Lacor).
+# Contexte pipeline / catalogue UI — pas une feature du modèle Lacor ; non affiché
+# en live dans les onglets Streamlit (cf. README « Temps réel : périmètre exact »).
 ESKOM_SEPUSH_BASE = "https://developer.sepush.co.za/business/2.0"
 ESKOM_SEPUSH_TOKEN_ENV = "ESKOM_SEPUSH_TOKEN"
 # Bloc de statut national pertinent par hôpital (Cape Town publie son propre
@@ -177,6 +177,12 @@ COLS_TO_DROP = [
     "recent_outages_24h",
     # Legacy : plus calculée depuis juin 2026, peut subsister dans d'anciens CSV
     "storm_risk",
+    # Métadonnées cible / EAGLE-I (hors features modèle)
+    "outage_source",
+    "outage_label_detail",
+    "county_customers_out",
+    "county_customers_out_frac",
+    "fips",
     # Colonnes brutes météo redondantes avec les features dérivées
     "cloud_cover",
     "visibility",

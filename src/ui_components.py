@@ -160,3 +160,111 @@ def show_shap_waterfall(shap_vals, expected_value, feature_cols: list[str], titl
     )
     st.plotly_chart(fig, width="stretch")
     st.caption("Rouge : augmente le risque · Vert : le réduit")
+
+
+def show_live_grid_weather_risk(
+    hospital_key: str,
+    *,
+    key_prefix: str = "em_risk",
+    show_charts: bool = True,
+) -> None:
+    """Risque contextuel Electricity Maps (zone GPS) + météo — hors modèle Lacor."""
+    from src.app_data import load_live_outage_risk
+
+    st.caption(
+        "Zone Electricity Maps au **point GPS** de l'hôpital + météo récente. "
+        "Score **indicatif** (distinct du modèle 1/3/6 h dans l'autre sous-onglet)."
+    )
+    bust_key = f"{key_prefix}_bust"
+    bust = st.session_state.get(bust_key, 0.0)
+    if st.button("Rafraîchir réseau + météo", key=f"{key_prefix}_refresh"):
+        st.session_state[bust_key] = bust + 1.0
+        st.rerun()
+
+    risk = load_live_outage_risk(hospital_key, bust)
+    if risk is None:
+        st.warning(
+            "Contexte live indisponible. Définir `ELECTRICITY_MAPS_TOKEN` "
+            "(electricitymaps.com) puis **Rafraîchir**."
+        )
+        return
+
+    zm = risk.get("zone_meta") or {}
+    zone_line = (
+        f"**Zone** `{risk.get('zone', '—')}` "
+        f"({risk.get('zone_source', '?')}, lat/lon hôpital"
+    )
+    if zm.get("country_name"):
+        zone_line += f", {zm['country_name']}"
+    zone_line += ")"
+    st.markdown(zone_line)
+
+    c1, c2, c3 = st.columns(3)
+    lvl = risk.get("level", "—")
+    delta_color = {"FAIBLE": "normal", "MOYEN": "off", "ÉLEVÉ": "inverse"}.get(lvl, "normal")
+    c1.metric("Risque réseau+météo", f"{risk.get('score_pct', 0)} %", delta=lvl, delta_color=delta_color)
+
+    grid = risk.get("grid")
+    if grid is not None and not grid.empty and "em_total_load_mw" in grid.columns:
+        c2.metric("Charge réseau", f"{float(grid['em_total_load_mw'].iloc[-1]):.0f} MW")
+    wx = risk.get("weather")
+    if wx is not None and not wx.empty and "temperature_2m" in wx.columns:
+        last_wx = wx.sort_values("datetime").iloc[-1]
+        c3.metric(
+            "Météo site",
+            f"{float(last_wx['temperature_2m']):.0f} °C",
+            delta=f"vent {float(last_wx.get('wind_speed_10m', 0) or 0):.0f} km/h",
+        )
+
+    with st.expander("Détail des facteurs de risque", expanded=False):
+        st.caption(risk.get("disclaimer", ""))
+        for fac in risk.get("factors", []):
+            bar = min(int(100 * float(fac.get("contrib", 0))), 100) / 100.0
+            st.progress(
+                bar,
+                text=(
+                    f"{fac.get('label')} — {fac.get('detail')} "
+                    f"(poids {100 * float(fac.get('weight', 0)):.0f} %)"
+                ),
+            )
+
+    if not show_charts:
+        return
+
+    gdf = risk.get("grid")
+    if gdf is not None and not gdf.empty and "em_total_load_mw" in gdf.columns:
+        fig_g = go.Figure()
+        fig_g.add_trace(go.Scatter(
+            x=gdf["datetime"],
+            y=gdf["em_total_load_mw"],
+            mode="lines",
+            name="Charge zone (MW)",
+            line=dict(color="#e67e22"),
+        ))
+        fig_g.update_layout(
+            height=220,
+            margin=dict(l=40, r=20, t=28, b=40),
+            title="Réseau EM — 24 h",
+            yaxis_title="MW",
+        )
+        st.plotly_chart(fig_g, width="stretch")
+
+    wdf = risk.get("weather")
+    if wdf is not None and not wdf.empty and "temperature_2m" in wdf.columns:
+        fig_w = go.Figure()
+        fig_w.add_trace(go.Scatter(
+            x=wdf["datetime"],
+            y=wdf["temperature_2m"],
+            mode="lines",
+            name="Température (°C)",
+            line=dict(color="#3498db"),
+        ))
+        fig_w.update_layout(
+            height=180,
+            margin=dict(l=40, r=20, t=28, b=40),
+            title="Météo récente (point hôpital)",
+            yaxis_title="°C",
+        )
+        st.plotly_chart(fig_w, width="stretch")
+
+    st.divider()

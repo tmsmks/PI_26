@@ -2,12 +2,13 @@
 Couche d'accès aux données pour l'app Streamlit (app.py).
 
 Chargements cachés (@st.cache_*) : modèle + SHAP, features Lacor, profils
-ERIC/NYC/africa_grid, météo/prévisions, Electricity Maps, plus la détection
-des sources par hôpital et le catalogue HOSPITAL_DISPLAY. Ne dépend QUE de
+ERIC/NYC/africa_grid, détection des sources par hôpital et catalogue
+``HOSPITAL_DISPLAY`` (hors ``ui_hidden``). Ne dépend QUE de
 src.* (aucun import d'app.py) -> pas de cycle. Extrait d'app.py (#10, palier 3).
 """
 
 import json
+import os
 from pathlib import Path
 
 import joblib
@@ -16,9 +17,9 @@ import pandas as pd
 import streamlit as st
 
 from src.utils.config import (
+    ELECTRICITYMAPS_TOKEN_ENV,
     EXTERNAL_SIGNAL_PREFIXES,
     FEATURES_DIR,
-    HOSPITAL_ELECTRICITY_ZONES,
     HOSPITAL_LOCATIONS,
     MODELS_DIR,
     ROOT_DIR,
@@ -28,6 +29,7 @@ from src.utils.hospitals import (
     TARGET_SOURCE_META,
     get_target_source,
 )
+from src.utils.local_signals import eaglei_path
 # ui_content est pur (zéro Streamlit, n'importe ni app ni app_data) -> pas de cycle.
 # load_table / apply_feature_engineering_single sont importés localement dans les
 # fonctions concernées.
@@ -139,54 +141,6 @@ def load_horizon_models(_mtime: float = 0.0) -> dict[int, dict]:
     return out
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def load_realtime_forecast(
-    hospital_key: str,
-    feature_cols: tuple[str, ...],
-    model_mtime: float,
-    horizon_mtime: float,
-    _mtime: float = 0.0,
-) -> dict | None:
-    """Prévision TEMPS RÉEL (Electricity Maps + météo) via modèles Lacor.
-    Cache 15 min."""
-    from src.realtime_forecast import realtime_forecast
-
-    mdl = load_model(model_mtime)
-    horizon_models = load_horizon_models(horizon_mtime)
-
-    def _predict_proba(frame: pd.DataFrame) -> np.ndarray:
-        X = frame.reindex(columns=list(feature_cols)).fillna(0.0)
-        for col in feature_cols:
-            if col in X.columns:
-                X[col] = pd.to_numeric(X[col], errors="coerce").fillna(0.0)
-        return mdl.predict_proba(X)[:, 1].astype(float)
-
-    try:
-        return realtime_forecast(
-            hospital_key,
-            list(feature_cols),
-            _predict_proba,
-            horizon_models=horizon_models or None,
-        )
-    except Exception as e:  # noqa: BLE001
-        st.warning(f"Prévision temps réel indisponible : {e}")
-        return None
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def load_loadshedding(hospital_key: str, _bust: float = 0.0) -> dict | None:
-    """Contexte délestage EskomSePush (Afrique du Sud) pour un hôpital. Cache
-    15 min (quota API gratuit = 50 appels/j). Retourne le dict de
-    `loadshedding_for_hospital` ou None (site non sud-africain, token absent,
-    ou API indisponible). `_bust` permet de forcer un rafraîchissement."""
-    from src.loadshedding import loadshedding_for_hospital
-    try:
-        return loadshedding_for_hospital(hospital_key)
-    except Exception as e:  # noqa: BLE001
-        st.warning(f"Délestage EskomSePush indisponible : {e}")
-        return None
-
-
 @st.cache_resource
 def load_duration_model(_mtime: float = 0.0) -> dict | None:
     """Modèle de durée des coupures (régression dédiée, cf. train_duration.py).
@@ -255,36 +209,10 @@ def load_lacor_features(_mtime: float = 0.0):
         st.stop()
 
 
-def _apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
-    """Applique le feature engineering complet sur un DataFrame brut hospitalier.
-
-    Délègue à `apply_feature_engineering_single` (src.features.build_features)
-    pour garantir une parité STRICTE avec le pipeline d'entraînement —
-    l'ancienne implémentation locale dupliquait ~150 lignes et dérivait
-    progressivement (cf. P4.4).
-    """
+def _apply_feature_engineering(df: pd.DataFrame, hospital_key: str) -> pd.DataFrame:
+    """Feature engineering aligné pipeline ; fériés = calendrier du pays du site."""
     from src.features.build_features import apply_feature_engineering_single
-    return apply_feature_engineering_single(df)
-
-
-def _forecast_file_mtime(hospital_key: str) -> float:
-    p = ROOT / "data" / "raw" / f"meteo_forecast_{hospital_key}.csv"
-    return p.stat().st_mtime if p.exists() else 0.0
-
-
-@st.cache_data
-def load_meteo_forecast(hospital_key: str, _mtime: float = 0.0) -> pd.DataFrame | None:
-    """Charge les prévisions Open-Meteo pour un hôpital (fichier généré par
-    `ingest_openmeteo_forecast.run()`)."""
-    path = ROOT / "data" / "raw" / f"meteo_forecast_{hospital_key}.csv"
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_csv(path)
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        return df
-    except Exception:
-        return None
+    return apply_feature_engineering_single(df, hospital_key=hospital_key)
 
 
 @st.cache_data
@@ -339,21 +267,19 @@ def load_eric_features(eric_code: str, hospital_info: dict) -> pd.DataFrame | No
             )
             df = df.merge(meteo[["datetime", *meteo_cols]], on="datetime", how="left")
 
-    df = _apply_feature_engineering(df)
+    df = _apply_feature_engineering(df, hospital_key or "__eric__")
     return df
 
 
 @st.cache_data
 def load_africa_grid_features(hospital_key: str, hospital_info: dict) -> pd.DataFrame | None:
-    """Charge un profil hospitalier africain en clonant Lacor puis en
-    re-scaling sur `avg_load_kw`, en injectant la météo Open-Meteo locale
-    et le signal Electricity Maps (charge réseau) propres au pays.
+    """Profil `africa_grid` : Lacor cloné + météo locale au point (lat/lon).
 
-    Justification : on n'a pas de relevé interne de consommation pour ces
-    hôpitaux. Le profil temporel reste celui de Lacor (variations
-    horaires/journalières/saisonnières d'un hôpital régional africain),
-    mais l'amplitude est mise à l'échelle de l'établissement et le contexte
-    météo + réseau local est injecté pour que la prédiction soit cohérente.
+    Pas de compteur public ni de coupure étiquetée pour le site. Les colonnes
+    ``em_*`` éventuelles héritées de Lacor sont mises à 0 : Electricity Maps
+    décrit une **zone réseau entière**, pas l'hôpital — on ne fusionne pas
+    ``electricitymaps_<key>.csv`` ici (cf. panneau sources = contexte documenté
+    seulement).
     """
     base = load_lacor_features(_features_file_mtime())
     if base is None or base.empty:
@@ -412,37 +338,9 @@ def load_africa_grid_features(hospital_key: str, hospital_info: dict) -> pd.Data
         except Exception as e:
             st.warning(f"Météo locale {hospital_key} illisible : {e}")
 
-    em_path = ROOT / "data" / "raw" / f"electricitymaps_{hospital_key}.csv"
-    if em_path.exists():
-        try:
-            em = pd.read_csv(em_path)
-            em["datetime"] = pd.to_datetime(em["datetime"], errors="coerce")
-            em = em.dropna(subset=["datetime"]).sort_values("datetime")
-            if not em.empty:
-                df["datetime"] = pd.to_datetime(df["datetime"])
-                em_cols = [c for c in em.columns if c.startswith("em_")]
-                merged = pd.merge_asof(
-                    df.sort_values("datetime"),
-                    em[["datetime"] + em_cols].sort_values("datetime"),
-                    on="datetime",
-                    direction="nearest",
-                    tolerance=pd.Timedelta("24h"),
-                    suffixes=("", "_local"),
-                )
-                for col in em_cols:
-                    local_col = f"{col}_local"
-                    if local_col in merged.columns:
-                        merged[col] = np.where(
-                            merged[local_col].notna(),
-                            merged[local_col],
-                            merged[col],
-                        )
-                        merged = merged.drop(columns=[local_col])
-                df = merged
-        except Exception as e:
-            st.warning(f"Electricity Maps {hospital_key} illisible : {e}")
+    # Pas de fusion Electricity Maps : signal zone entière, pas local au site.
 
-    df = _apply_feature_engineering(df)
+    df = _apply_feature_engineering(df, hospital_key)
     return df
 
 
@@ -480,7 +378,7 @@ def load_nyc_features(nyc_code: str, hospital_info: dict) -> pd.DataFrame | None
         )
         df = df.merge(meteo[["datetime", *meteo_cols]], on="datetime", how="left")
 
-    df = _apply_feature_engineering(df)
+    df = _apply_feature_engineering(df, hospital_key or "__nyc__")
     return df
 
 
@@ -553,7 +451,6 @@ def detect_hospital_data_sources(hospital_key: str, hospital_info: dict) -> list
 
     # ── 2. Météo ──────────────────────────────────────────────────
     meteo_path = _RAW_DIR / f"meteo_{hospital_key}.csv"
-    forecast_path = _RAW_DIR / f"meteo_forecast_{hospital_key}.csv"
     if meteo_path.exists():
         sources.append({
             "label": "Météo Open-Meteo (historique)",
@@ -566,34 +463,88 @@ def detect_hospital_data_sources(hospital_key: str, hospital_info: dict) -> list
             "emoji": "🌤️", "color": "#f39c12", "status": "synthetic",
             "detail": "Compromis : météo Lacor avec correction de température",
         })
-    if forecast_path.exists():
-        sources.append({
-            "label": "Météo Open-Meteo (prévisions)",
-            "emoji": "🔮", "color": "#3498db", "status": "available",
-            "detail": "Prévisions 7 jours pour mode anticipation",
-        })
+    # ── 3. Electricity Maps (zone au point GPS) ───────────────────
+    from src.utils.em_zone import load_zone_cache, resolve_zone_precise
 
-    # ── 3. Electricity Maps (réseau local) ───────────────────────
-    em_path = electricitymaps_snapshot_path(hospital_key)
-    if em_path.exists():
+    _em_cache = load_zone_cache().get(hospital_key, {})
+    _zone = _em_cache.get("zone")
+    _em_csv = _RAW_DIR / f"electricitymaps_{hospital_key}.csv"
+    if _zone or _em_csv.exists():
+        _src = _em_cache.get("source", "csv")
         sources.append({
-            "label": "Electricity Maps (réseau local)",
-            "emoji": "⚡", "color": "#f1c40f", "status": "context",
-            "detail": "Zone locale, charge réseau, intensité carbone, mix",
-        })
-    elif hospital_key in HOSPITAL_LOCATIONS:
-        zone = HOSPITAL_ELECTRICITY_ZONES.get(hospital_key, "auto (lat/lon)")
-        sources.append({
-            "label": "Electricity Maps (réseau local)",
-            "emoji": "⚡", "color": "#e67e22", "status": "missing",
+            "label": "Electricity Maps (zone réseau au point hôpital)",
+            "emoji": "⚡",
+            "color": "#3498db",
+            "status": "available",
             "detail": (
-                f"Snapshot absent (zone {zone}) — nécessite "
-                "ELECTRICITY_MAPS_TOKEN + "
-                "`python -m src.data.ingest_electricitymaps`"
+                f"Zone `{_zone or '?'}` (résolution {_src} via lat/lon) — "
+                "risque contextuel dans le panneau dédié ; hors modèle ML"
             ),
         })
+    elif os.environ.get(ELECTRICITYMAPS_TOKEN_ENV):
+        _res = resolve_zone_precise(hospital_key)
+        if _res.get("zone"):
+            sources.append({
+                "label": "Electricity Maps (zone réseau au point hôpital)",
+                "emoji": "⚡",
+                "color": "#95a5a6",
+                "status": "context",
+                "detail": f"Zone `{_res['zone']}` ({_res.get('source')}) — rafraîchir le panneau risque live",
+            })
+        else:
+            sources.append({
+                "label": "Electricity Maps",
+                "emoji": "⚡",
+                "color": "#bdc3c7",
+                "status": "missing",
+                "detail": "Zone non résolue pour ce point — vérifier token ou couverture",
+            })
+    else:
+        sources.append({
+            "label": "Electricity Maps",
+            "emoji": "⚡",
+            "color": "#bdc3c7",
+            "status": "missing",
+            "detail": f"Définir `{ELECTRICITYMAPS_TOKEN_ENV}` pour activer l'analyse réseau live",
+        })
+
+    # ── 4. Coupures réelles comté (EAGLE-I, USA) ─────────────────
+    _eaglei = eaglei_path(hospital_key, hospital_info)
+    if _eaglei is not None:
+        if _eaglei.exists():
+            sources.append({
+                "label": "Coupures réelles comté (EAGLE-I)",
+                "emoji": "🗽", "color": "#2ecc71", "status": "primary",
+                "detail": (
+                    f"Clients sans courant dans le comté — {_eaglei.name} "
+                    f"(plus fin qu'une zone NY-ISO entière)"
+                ),
+            })
+        else:
+            sources.append({
+                "label": "Coupures réelles comté (EAGLE-I)",
+                "emoji": "🗽", "color": "#e67e22", "status": "missing",
+                "detail": (
+                    f"Comté `{hospital_info.get('eaglei_county_key')}` — lancer "
+                    "`python -m src.data.ingest_eaglei` (bruts figshare requis)"
+                ),
+            })
 
     return sources
+
+
+@st.cache_data
+def load_eaglei_local(hospital_key: str, hospital_info: dict) -> pd.DataFrame | None:
+    """Coupures réelles EAGLE-I au comté de l'hôpital (USA), si rattaché."""
+    path = eaglei_path(hospital_key, hospital_info)
+    if path is None or not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        return df.sort_values("datetime").reset_index(drop=True)
+    except Exception:
+        return None
 
 
 def _neutralize_external_signals(df: pd.DataFrame, hospital_key: str) -> pd.DataFrame:
@@ -709,6 +660,18 @@ def load_duration_summary(_mtime: float = 0.0) -> dict | None:
         return None
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_live_outage_risk(hospital_key: str, _bust: float = 0.0) -> dict | None:
+    """Risque contextuel réseau (EM zone GPS) + météo point hôpital. Cache 15 min."""
+    from src.grid_outage_risk import live_outage_risk
+
+    try:
+        return live_outage_risk(hospital_key)
+    except Exception as e:  # noqa: BLE001
+        st.warning(f"Analyse Electricity Maps / risque live indisponible : {e}")
+        return None
+
+
 @st.cache_data
 def load_multisite_summary(_mtime: float = 0.0) -> dict | None:
     """Résumé de la validation de généralisation inter-sites (LOSO).
@@ -725,23 +688,3 @@ def load_multisite_summary(_mtime: float = 0.0) -> dict | None:
         return None
 
 
-def electricitymaps_snapshot_path(hospital_key: str) -> Path:
-    return ROOT / "data" / "raw" / f"electricitymaps_{hospital_key}.csv"
-
-
-def load_electricitymaps_snapshot(hospital_key: str) -> pd.DataFrame | None:
-    """Charge le CSV Electricity Maps d'un hôpital (si disponible)."""
-    path = electricitymaps_snapshot_path(hospital_key)
-    if not path.exists():
-        return None
-    try:
-        em = pd.read_csv(path)
-    except Exception:
-        return None
-    if em.empty or "datetime" not in em.columns:
-        return None
-    em["datetime"] = pd.to_datetime(em["datetime"], errors="coerce")
-    em = em.dropna(subset=["datetime"]).sort_values("datetime")
-    if em.empty:
-        return None
-    return em

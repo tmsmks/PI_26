@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test live Streamlit (http://localhost:8502) — parcourt les hôpitaux du sélecteur."""
+"""Test live Streamlit — chaque hôpital ; 3 onglets ; replay = sous-onglet Modèle 1/3/6 h."""
 
 from __future__ import annotations
 
@@ -11,8 +11,19 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8502"
+URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8503"
 TIMEOUT_MS = 90_000
+
+MAIN_TABS = ("Prochaine coupure", "Historique", "Simulation")
+
+TARGET_MARKERS = (
+    "Coupures réelles observées",
+    "coupures simulées",
+    "Aucune coupure étiquetée",
+    "Coupures réseau comté",
+    "Charge réelle",
+    "comté",
+)
 
 
 def _wait_app(page) -> None:
@@ -21,8 +32,7 @@ def _wait_app(page) -> None:
 
 
 def _hospital_select(page):
-    """Premier select Streamlit sous le label Hôpital."""
-    labels = page.locator("label").filter(has_text=re.compile(r"^Hôpital$"))
+    labels = page.locator("label").filter(has_text=re.compile(r"^Établissement$"))
     if labels.count() == 0:
         return page.locator('[data-testid="stSelectbox"]').first
     block = labels.first.locator("xpath=ancestor::div[contains(@class,'stSelectbox')][1]")
@@ -56,8 +66,6 @@ def _page_issues(page) -> dict:
         t = alerts.nth(i).inner_text().strip()
         if t:
             texts.append(t[:500])
-    errors = [t for t in texts if "error" in page.locator('[data-testid="stAlert"]').nth(texts.index(t)).get_attribute("class") or ""]
-    # Classify by emoji / keywords
     blocking = []
     warnings = []
     infos = []
@@ -70,36 +78,30 @@ def _page_issues(page) -> dict:
         else:
             infos.append(t)
     body = page.inner_text("body")
-    has_tabs = all(
-        x in body
-        for x in (
-            "Prochaine coupure",
-            "Analyse historique",
-            "Prévisions J+7",
-            "Simulation manuelle",
+    has_tabs = all(t in body for t in MAIN_TABS)
+    has_no_forecast_tab = "Prévisions J+7" not in body
+    has_no_realtime_radio = "Temps réel" not in body
+    has_replay_on_next_tab = False
+    if page.get_by_role("tab", name=re.compile("Prochaine coupure")).count():
+        page.get_by_role("tab", name=re.compile("Prochaine coupure")).click()
+        time.sleep(0.5)
+        next_body = page.inner_text("body")
+        has_replay_on_next_tab = (
+            "Date de référence" in next_body and "Heure de référence" in next_body
         )
-    )
-    has_hero = "Prédiction de coupures" in body
-    has_sources = "Sources utilisées pour" in body
-    has_target_badge = any(
-        k in body
-        for k in (
-            "Coupures réelles observées",
-            "coupures simulées",
-            "Aucune coupure étiquetée",
-        )
-    )
     return {
         "alert_count": len(texts),
         "blocking": blocking,
         "warnings": warnings[:3],
         "infos_sample": infos[:2],
         "has_tabs": has_tabs,
-        "has_hero": has_hero,
-        "has_sources": has_sources,
-        "has_target_badge": has_target_badge,
-        "sidebar_duration": "Modèle de **durée**" in body or "Durée : heuristique" in body,
-        "em_panel": "Electricity Maps" in body or "snapshot" in body.lower(),
+        "has_no_forecast_tab": has_no_forecast_tab,
+        "has_no_realtime_radio": has_no_realtime_radio,
+        "has_replay_on_next_tab": has_replay_on_next_tab,
+        "has_hero": "Prédiction de coupures" in body,
+        "has_technical_expander": "Informations techniques" in body,
+        "has_target_marker": any(m in body for m in TARGET_MARKERS),
+        "sidebar_duration": "Modèle de durée" in body or "Durée : heuristique" in body,
     }
 
 
@@ -136,6 +138,15 @@ def main() -> int:
                 entry.update(issues)
                 if issues["blocking"]:
                     entry["ok"] = False
+                if not issues["has_tabs"]:
+                    entry["ok"] = False
+                    entry.setdefault("fail_reason", []).append("onglets principaux manquants")
+                if not issues["has_no_realtime_radio"]:
+                    entry["ok"] = False
+                    entry.setdefault("fail_reason", []).append("Temps réel encore visible")
+                if not issues["has_replay_on_next_tab"]:
+                    entry["ok"] = False
+                    entry.setdefault("fail_reason", []).append("replay date/heure absent")
             except Exception as e:
                 entry["ok"] = False
                 entry["error"] = str(e)

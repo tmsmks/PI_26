@@ -24,7 +24,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.data.eaglei_outages import OUTAGE_SOURCE_EAGLEI, apply_eaglei_outages
 from src.utils.config import RAW_DIR, RANDOM_SEED
+from src.utils.hospitals import HOSPITAL_DISPLAY
 from src.utils.io import save_csv
 
 logger = logging.getLogger(__name__)
@@ -165,8 +167,19 @@ def _generate_hourly_profile(hospital: dict, rng: np.random.Generator) -> pd.Dat
         np.round(load_kw * rng.uniform(0.7, 0.95, size=len(df)), 1),
         0.0,
     )
+    df["outage_source"] = "synthetic_stochastic"
+    df["outage_label_detail"] = "Coupures simulées (formule stochastique LL84)"
 
     return df
+
+
+def _eaglei_county_key(site_code: str) -> str | None:
+    """Clé comté EAGLE-I depuis le catalogue hôpital (`nyc_code`)."""
+    nyc_code = site_code.lower()
+    for info in HOSPITAL_DISPLAY.values():
+        if info.get("nyc_code") == nyc_code:
+            return info.get("eaglei_county_key")
+    return None
 
 
 def build_nyc_summary() -> pd.DataFrame:
@@ -186,6 +199,20 @@ def build_nyc_hourly() -> dict[str, pd.DataFrame]:
         code = h["site_code"].lower()
         logger.info("Génération profil horaire NYC : %s (%s)", h["site_name"], code)
         df = _generate_hourly_profile(h, rng)
+        county_key = _eaglei_county_key(h["site_code"])
+        if county_key:
+            df, source = apply_eaglei_outages(df, county_key, rng=rng)
+            if source == OUTAGE_SOURCE_EAGLEI:
+                logger.info(
+                    "  → is_outage remplacé par EAGLE-I comté `%s` (réseau comté, pas hôpital).",
+                    county_key,
+                )
+            else:
+                logger.warning(
+                    "  → EAGLE-I `%s` absent — coupures synthétiques conservées "
+                    "(lancer `python -m src.data.ingest_eaglei` après téléchargement figshare).",
+                    county_key,
+                )
         df["site_code"] = h["site_code"]
         df["site_name"] = h["site_name"]
         out[code] = df

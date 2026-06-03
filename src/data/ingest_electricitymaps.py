@@ -148,25 +148,11 @@ def resolve_zone(
     lat: float | None = None,
     lon: float | None = None,
 ) -> str | None:
-    """Détermine la zone Electricity Maps locale d'un hôpital.
+    """Zone EM la plus fine : `/v4/zone` au point GPS, repli mapping statique."""
+    from src.utils.em_zone import resolve_zone_precise
 
-    Priorité 1 : mapping statique `HOSPITAL_ELECTRICITY_ZONES` (rapide,
-                 économise un appel API).
-    Priorité 2 : appel `/v4/zone?lat&lon` qui retourne la zone exacte
-                 selon le polygone géographique d'Electricity Maps.
-    """
-    static = HOSPITAL_ELECTRICITY_ZONES.get(hospital)
-    if static:
-        return static
-
-    if lat is None or lon is None:
-        return None
-
-    data = _call(EP_ZONE, token, {"lat": lat, "lon": lon})
-    if not data:
-        return None
-    # Format : {"zone": "FR", "countryName": "France", ...}
-    return data.get("zone")
+    res = resolve_zone_precise(hospital, lat=lat, lon=lon, token=token)
+    return res.get("zone")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -400,7 +386,10 @@ def run_live(window_hours: int = 24) -> None:
     if not token:
         return
 
+    from src.utils.em_zone import resolve_and_cache_zone
+
     for hospital, coords in HOSPITAL_LOCATIONS.items():
+        resolve_and_cache_zone(hospital, token=token)
         df = _ingest_one_hospital(hospital, coords, token, mode="live")
         if df is None or df.empty:
             continue
@@ -420,7 +409,10 @@ def run(year: int | None = None) -> None:
     if not token:
         return
 
+    from src.utils.em_zone import resolve_and_cache_zone
+
     for hospital, coords in HOSPITAL_LOCATIONS.items():
+        resolve_and_cache_zone(hospital, token=token)
         df = _ingest_one_hospital(hospital, coords, token, mode="train")
         if df is None or df.empty:
             continue

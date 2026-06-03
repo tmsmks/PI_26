@@ -215,7 +215,7 @@ def enrich_one_hospital(base_df: pd.DataFrame, hospital: str) -> pd.DataFrame:
     else:
         logger.info("Pas de météo pour %s — ignoré.", hospital)
 
-    out = add_electricitymaps_signal(out, hospital=hospital)
+    # Electricity Maps (`em_*`) : hors modèle Lacor — non fusionné (cf. prune_unused_data).
 
     out["hour"] = out["datetime"].dt.hour
     out["day_of_week"] = out["datetime"].dt.dayofweek

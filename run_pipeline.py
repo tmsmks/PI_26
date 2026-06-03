@@ -2,7 +2,7 @@
 Script principal : exécute le pipeline complet de bout en bout.
 
 Étapes :
-  1. Ingestion (Lacor, ERIC NHS, NYC LL84, météo archive + prévisions, Electricity Maps)
+  1. Ingestion (Lacor, ERIC, NYC, météo, EAGLE-I si bruts, Electricity Maps si token)
   2. Preprocessing (rééchantillonnage, fusion multi-hôpitaux)
   3. Feature engineering
   4. Entraînement nowcast (RF / XGBoost / LightGBM + SHAP)
@@ -83,6 +83,13 @@ def main(
     except Exception as e:
         logger.warning("  ⚠ Ingestion ERIC échouée : %s", e)
 
+    logger.info("  → Ingestion EAGLE-I (coupures comté — NYC LL84 si bruts présents)…")
+    try:
+        from src.data.ingest_eaglei import run as ingest_eaglei
+        _run_timed("Ingestion EAGLE-I", ingest_eaglei)
+    except Exception as e:
+        logger.warning("  ⚠ Ingestion EAGLE-I échouée : %s", e)
+
     logger.info("  → Ingestion données NYC LL84…")
     try:
         from src.data.ingest_nyc_ll84 import run as ingest_nyc
@@ -90,14 +97,7 @@ def main(
     except Exception as e:
         logger.warning("  ⚠ Ingestion NYC LL84 échouée : %s", e)
 
-    logger.info("  → Ingestion prévisions météo (Open-Meteo Forecast)…")
-    try:
-        from src.data.ingest_openmeteo_forecast import run as ingest_forecast
-        _run_timed("Ingestion Forecast", ingest_forecast)
-    except Exception as e:
-        logger.warning("  ⚠ Ingestion prévisions échouée : %s", e)
-
-    logger.info("  → Ingestion réseau local Electricity Maps (charge + mix)…")
+    logger.info("  → Ingestion Electricity Maps (zone au point GPS + signaux réseau)…")
     try:
         from src.data.ingest_electricitymaps import run as ingest_em_train, run_live as ingest_em_live
         if mode == "live":

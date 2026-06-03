@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Sélection d'un hôpital par recherche clavier dans le select Streamlit."""
+"""Sélection d'hôpitaux par recherche clavier (sélecteur « Établissement »)."""
 
+from __future__ import annotations
+
+import json
 import sys
 import time
 
 from playwright.sync_api import sync_playwright
 
-URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8502"
-SEARCH = sys.argv[2] if len(sys.argv) > 2 else "St Thomas"
+URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8503"
 
 
 def select_by_search(page, text: str) -> str:
@@ -28,34 +30,40 @@ def snapshot(page) -> dict:
     body = page.inner_text("body")
     side = page.locator('[data-testid="stSidebar"]').inner_text()
     return {
-        "target_badge": sum(
-            1
-            for t in (
+        "target_marker": any(
+            m in body
+            for m in (
                 "Coupures réelles observées",
                 "coupures simulées",
                 "Aucune coupure étiquetée",
+                "Coupures réseau comté",
+                "comté",
             )
-            if t in body
         ),
-        "eric_banner": "ERIC NHS" in body or "données ERIC" in body.lower(),
-        "nyc_banner": "NYC" in body and "LL84" in body,
-        "africa_banner": "profil de consommation estimé" in body.lower(),
+        "eric_banner": "ERIC" in body,
+        "nyc_banner": "LL84" in body,
+        "africa_clone": "cloné" in body.lower(),
+        "no_realtime_ui": "Temps réel" not in body,
         "blocking": any(
             x in body.lower()
-            for x in ("impossible de charger", "aucune donnée disponible", "données introuvables")
+            for x in (
+                "impossible de charger",
+                "aucune donnée disponible",
+                "données introuvables",
+            )
         ),
         "sidebar_model_lines": side.count("Modèle :"),
-        "illustratif_tab": "illustratif" in body.lower() or "Score illustratif" in body,
+        "illustratif_hint": "illustratif" in body.lower() or "Score illustratif" in body,
     }
 
 
 def main():
     tests = [
-        ("St Thomas", "eric UK"),
-        ("Bellevue", "nyc US"),
+        ("St Thomas", "eric"),
+        ("Bellevue", "nyc"),
         ("Lacor", "lacor"),
-        ("Groote Schuur", "africa ZA"),
-        ("Manchester", "eric UK"),
+        ("Groote Schuur", "africa"),
+        ("Manchester", "eric"),
     ]
     out = []
     with sync_playwright() as p:
@@ -66,11 +74,15 @@ def main():
             try:
                 label = select_by_search(page, search)
                 snap = snapshot(page)
-                snap.update({"search": search, "kind": kind, "selected": label, "ok": not snap["blocking"]})
+                snap.update({
+                    "search": search,
+                    "kind": kind,
+                    "selected": label,
+                    "ok": not snap["blocking"] and snap["no_realtime_ui"],
+                })
                 out.append(snap)
             except Exception as e:
                 out.append({"search": search, "kind": kind, "ok": False, "error": str(e)})
-    import json
     print(json.dumps({"caption": cap, "tests": out}, ensure_ascii=False, indent=2))
 
 

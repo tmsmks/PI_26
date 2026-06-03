@@ -509,23 +509,12 @@ def compute_and_save_shap(
     sv_list = []
     exp_list = []
     explainer = None  # explainer du dernier estimator, utilisé pour la persistance
+    from src.utils.shap_compat import tree_expected_value, tree_shap_values
+
     for est in calibrated_estimators:
         explainer = shap.TreeExplainer(est)
-        sv_k = explainer.shap_values(X_shap)
-        # Normaliser vers une matrice 2D (n_samples, n_features) pour la classe
-        # positive. Selon la version de SHAP et le modèle, `shap_values` renvoie :
-        #   - une liste [classe0, classe1] (ancien format) ;
-        #   - un ndarray 3D (n, features, classes) (SHAP récent, forêts) ;
-        #   - un ndarray 2D (n, features) déjà réduit.
-        # Sans ce traitement, un winner RandomForest faisait planter le pipeline
-        # (« Per-column arrays must each be 1-dimensional »).
-        if isinstance(sv_k, list):
-            sv_k = sv_k[1] if len(sv_k) > 1 else sv_k[0]
-        sv_k = np.asarray(sv_k)
-        if sv_k.ndim == 3:
-            sv_k = sv_k[:, :, 1] if sv_k.shape[-1] > 1 else sv_k[:, :, 0]
-        exp_k = np.asarray(explainer.expected_value).ravel()
-        exp_k = float(exp_k[1] if exp_k.size > 1 else exp_k[0])
+        sv_k = tree_shap_values(explainer, X_shap)
+        exp_k = tree_expected_value(explainer)
         sv_list.append(sv_k)
         exp_list.append(exp_k)
 

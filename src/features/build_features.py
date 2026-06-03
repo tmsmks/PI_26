@@ -7,7 +7,7 @@ Variables créées :
   - is_weekend                            (booléen)
   - hour_sin, hour_cos                    (encodage cyclique)
   - month_sin, month_cos                  (encodage cyclique)
-  - is_public_holiday                     (jours fériés ougandais)
+  - is_public_holiday                     (jours fériés 2022 du pays du site)
 
   ── Consommation (rolling, kW absolus — inclus pour Lacor, cf. COLS_TO_DROP) ──
   - load_rolling_6h                       (moyenne glissante 6h)
@@ -66,11 +66,9 @@ from time import perf_counter
 import numpy as np
 import pandas as pd
 
-from src.utils.config import (
-    FEATURES_DIR,
-    PROCESSED_DIR,
-    UGANDA_PUBLIC_HOLIDAYS_2022,
-)
+from src.utils.config import FEATURES_DIR, PROCESSED_DIR
+from src.utils.hospitals import HOSPITAL_DISPLAY
+from src.utils.public_holidays import country_for_hospital, is_public_holiday_mask
 from src.utils.io import load_csv, load_table, save_table
 
 logger = logging.getLogger(__name__)
@@ -83,8 +81,17 @@ def add_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
     df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
     df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
 
-    holidays = pd.to_datetime(UGANDA_PUBLIC_HOLIDAYS_2022)
-    df["is_public_holiday"] = df["datetime"].dt.normalize().isin(holidays).astype(int)
+    if "hospital" in df.columns:
+        df["is_public_holiday"] = 0
+        for hkey, grp in df.groupby("hospital", sort=False):
+            country = country_for_hospital(str(hkey))
+            if not country and hkey in HOSPITAL_DISPLAY:
+                country = HOSPITAL_DISPLAY[hkey].get("country", "")
+            df.loc[grp.index, "is_public_holiday"] = is_public_holiday_mask(
+                grp["datetime"], country
+            ).values
+    else:
+        df["is_public_holiday"] = 0
 
     return df
 
@@ -327,7 +334,7 @@ def apply_feature_engineering_single(
     """Applique le feature engineering complet à un DataFrame *mono-hôpital*.
 
     Garantit la cohérence stricte avec `run()` (pipeline d'entraînement) :
-      - temporel (hour, day_of_week, month, cyclique, fériés UG)
+      - temporel (hour, day_of_week, month, cyclique, fériés pays du site)
       - charge (rolling, diff, peak_ratio)
       - sources d'énergie (solar/generator/grid + recent_outages_*h)
       - météo de base + interactions

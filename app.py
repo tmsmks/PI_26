@@ -1,8 +1,9 @@
 """
 Interface Streamlit — Prédiction de coupures d'électricité en hôpitaux.
 
-Onglets : Prochaine coupure (1/3/6 h), Analyse historique, Prévisions J+7,
-Simulation manuelle. Couche données : src/app_data.py ; UI : src/ui_*.py.
+Onglets : Prochaine coupure | Historique | Simulation.
+  Prochaine coupure → Réseau & météo (live) | Modèle 1/3/6 h (replay).
+Couche données : src/app_data.py ; risque live : src/grid_outage_risk.py ; UI : src/ui_*.py.
 """
 
 import sys
@@ -31,29 +32,25 @@ from src.utils.config import (
 from src.app_data import (
     HOSPITAL_DISPLAY,
     _features_file_mtime,
-    _forecast_file_mtime,
     _model_file_mtime,
     detect_hospital_data_sources,
-    electricitymaps_snapshot_path,
-    load_electricitymaps_snapshot,
+    load_eaglei_local,
     load_global_shap_importance,
     load_hospital_data,
     load_lacor_features,
-    load_loadshedding,
-    load_meteo_forecast,
     load_model,
     load_horizon_models,
     load_duration_model,
     load_duration_summary,
     load_multisite_summary,
-    load_realtime_forecast,
     _duration_summary_mtime,
     _horizon_models_mtime,
     _multisite_summary_mtime,
     load_shap_explainer,
 )
-from src.loadshedding import is_supported as loadshedding_supported
-from src.utils.hospitals import TARGET_SOURCE_META, get_target_source
+from src.utils.local_signals import local_signal_profile
+from src.utils.hospitals import TARGET_SOURCE_META, get_target_source, hospital_label
+from src.utils.shap_compat import tree_expected_value, tree_shap_values
 
 # ── Configuration ────────────────────────────────────────────────────
 
@@ -65,26 +62,18 @@ st.set_page_config(
 # HOSPITAL_DISPLAY (catalogue filtré des hôpitaux visibles) est désormais
 # défini dans src/app_data.py et importé ci-dessus.
 
-# N'afficher que les hôpitaux avec données de consommation réelles
-# (pas de profil estimé/cloné).
-REAL_DATA_SOURCES = {"eric", "nyc_ll84"}
-# Hôpitaux à RÉSEAU temps réel (Electricity Maps live) : la consommation y est
-# estimée, mais le signal réseau (charge, mix, carbone) est une vraie donnée
-# live → on les rend accessibles même en mode « données réelles » car ils
-# alimentent la prévision temps réel de l'onglet « Prochaine coupure ».
-REALTIME_GRID_SOURCES = {"africa_grid"}
-REAL_HOSPITAL_KEYS = [
+# Hôpitaux proposés dans le sélecteur (Lacor + ERIC + NYC + profils clonés).
+SELECTOR_HOSPITAL_KEYS = [
     k for k, v in HOSPITAL_DISPLAY.items()
     if k == "lacor_uganda"
-    or v.get("data_source") in REAL_DATA_SOURCES
-    or v.get("data_source") in REALTIME_GRID_SOURCES
+    or v.get("data_source") in ("eric", "nyc_ll84", "africa_grid")
 ]
-ALL_HOSPITAL_KEYS = list(HOSPITAL_DISPLAY.keys())
 
 # Ordre d'affichage dans le menu : réel → synthétique → cloné (honnêteté UX).
-_TARGET_SOURCE_ORDER = ("real", "synthetic", "cloned")
+_TARGET_SOURCE_ORDER = ("real", "county_network", "synthetic", "cloned")
 _TARGET_SOURCE_SHORT = {
     "real": "Réel",
+    "county_network": "Conso bâtiment, coupures comté",
     "synthetic": "Charge réelle, coupures simulées",
     "cloned": "Cloné",
 }
@@ -113,14 +102,16 @@ def _sorted_hospital_keys(keys: list[str]) -> list[str]:
 
 
 def _hospital_select_label(hospital_key: str) -> str:
-    """Libellé menu : catégorie + nom + lieu."""
+    """Libellé menu : drapeau + catégorie + nom + lieu."""
     h = HOSPITAL_DISPLAY[hospital_key]
     tsrc = get_target_source(hospital_key, h)
     tag = _TARGET_SOURCE_SHORT[tsrc]
-    return f"[{tag}] {h['name']} — {h['location']}"
+    flag = (h.get("flag") or "").strip()
+    prefix = f"{flag} " if flag else ""
+    return f"{prefix}[{tag}] {h['name']} — {h['location']}"
 
 
-HOSPITAL_BY_SOURCE = _hospitals_by_target_source(REAL_HOSPITAL_KEYS)
+HOSPITAL_BY_SOURCE = _hospitals_by_target_source(SELECTOR_HOSPITAL_KEYS)
 
 from src.nowcast_horizons import predict_horizons
 from src.ui_content import (
@@ -133,6 +124,7 @@ from src.ui_content import (
 )
 from src.ui_components import (
     show_factors,
+    show_live_grid_weather_risk,
     show_risk_result,
     show_shap_waterfall,
 )
@@ -144,129 +136,6 @@ from src.ui_components import (
 # Noms de fichiers modèle : nouveaux noms neutres (le gagnant peut être RF,
 # XGBoost ou LightGBM), avec repli sur les anciens `*_rf.joblib` pour la
 # rétro-compatibilité tant que le pipeline n'a pas été ré-exécuté.
-
-
-def _match_similar_historical_rows_bulk(
-    hist_df: pd.DataFrame,
-    target_hours: np.ndarray,
-    target_months: np.ndarray,
-    target_dows: np.ndarray,
-    target_temps: np.ndarray,
-) -> np.ndarray:
-    """Pour chaque triplet (hour, month, dow, temp) de prévision, retourne
-    l'index hist_df de la ligne la plus proche. Vectorisé (broadcasting
-    numpy) plutôt qu'une boucle Python qui copiait `hist_df` 168 fois.
-    """
-    h = hist_df["hour"].to_numpy()
-    m = hist_df["month"].to_numpy()
-    d = hist_df["day_of_week"].to_numpy()
-    t = hist_df["temperature_2m"].to_numpy()
-    hist_index = hist_df.index.to_numpy()
-
-    # Matrice (N_targets × N_hist) — pour 168 × 8760 ≈ 1.5M flottants, OK en RAM.
-    score = (
-        3.0 * np.abs(h[None, :] - target_hours[:, None])
-        + 2.0 * np.abs(m[None, :] - target_months[:, None])
-        + np.abs(d[None, :] - target_dows[:, None])
-        + 0.1 * np.abs(t[None, :] - target_temps[:, None])
-    )
-    best = score.argmin(axis=1)
-    return hist_index[best]
-
-
-def build_forecast_predictions(
-    hist_df: pd.DataFrame,
-    forecast_df: pd.DataFrame,
-    feature_cols: list[str],
-    hospital_key: str,
-) -> pd.DataFrame:
-    """Pour chaque heure future du CSV prévisions, construit une ligne de
-    features (consommation empruntée à l'heure historique similaire, météo
-    remplacée par les prévisions) et prédit la probabilité de coupure.
-
-    Optimisé : matching vectorisé + 1 seul appel `predict_proba` batché
-    (avant : 168 itérations Python × `df.copy()` × `predict_proba` unitaire).
-    """
-    if forecast_df.empty:
-        return pd.DataFrame()
-
-    meteo_cols_forecast = [
-        "temperature_2m", "relative_humidity_2m", "dew_point_2m",
-        "wind_speed_10m", "wind_gusts_10m", "precipitation",
-        "surface_pressure", "shortwave_radiation", "cloud_cover",
-        "visibility", "et0_fao_evapotranspiration", "cape", "weathercode",
-    ]
-
-    fc = forecast_df.copy()
-    fc["datetime"] = pd.to_datetime(fc["datetime"])
-    if "temperature_2m" not in fc.columns:
-        fc["temperature_2m"] = 25.0
-    hours_t = fc["datetime"].dt.hour.to_numpy()
-    months_t = fc["datetime"].dt.month.to_numpy()
-    dows_t = fc["datetime"].dt.dayofweek.to_numpy()
-    temps_t = fc["temperature_2m"].fillna(25.0).to_numpy(dtype=np.float64)
-
-    # 1) Trouver l'historique le plus proche pour chaque heure prévue.
-    best_idx = _match_similar_historical_rows_bulk(
-        hist_df, hours_t, months_t, dows_t, temps_t,
-    )
-    feat_batch = hist_df.loc[best_idx, feature_cols].reset_index(drop=True).copy()
-
-    # 2) Écraser les variables météo par les prévisions.
-    for mcol in meteo_cols_forecast:
-        if mcol in fc.columns and mcol in feat_batch.columns:
-            feat_batch[mcol] = pd.to_numeric(fc[mcol].values, errors="coerce")
-
-    # 3) Recalculer les variables dérivées cohérentes avec la météo prévue.
-    if {"temperature_2m", "relative_humidity_2m"}.issubset(feat_batch.columns):
-        feat_batch["temp_humidity_interaction"] = (
-            feat_batch["temperature_2m"] * feat_batch["relative_humidity_2m"] / 100
-        )
-    if {"wind_speed_10m", "precipitation"}.issubset(feat_batch.columns):
-        feat_batch["wind_precipitation_interaction"] = (
-            feat_batch["wind_speed_10m"] * feat_batch["precipitation"]
-        )
-        if "rain_intensity" in feat_batch.columns:
-            feat_batch["rain_intensity"] = (
-                feat_batch["precipitation"] * feat_batch["wind_speed_10m"]
-            )
-    if "shortwave_radiation" in feat_batch.columns and "solar_available" in feat_batch.columns:
-        feat_batch["solar_available"] = (feat_batch["shortwave_radiation"] > 50).astype(int)
-    if "temperature_2m" in feat_batch.columns and "heat_stress" in feat_batch.columns:
-        feat_batch["heat_stress"] = (feat_batch["temperature_2m"] > 30).astype(int)
-    if "cloud_cover" in feat_batch.columns and "cloud_cover_pct" in feat_batch.columns:
-        feat_batch["cloud_cover_pct"] = feat_batch["cloud_cover"]
-    if "visibility" in feat_batch.columns and "visibility_m" in feat_batch.columns:
-        feat_batch["visibility_m"] = feat_batch["visibility"]
-    if "et0_fao_evapotranspiration" in feat_batch.columns and "evapotranspiration" in feat_batch.columns:
-        feat_batch["evapotranspiration"] = feat_batch["et0_fao_evapotranspiration"]
-
-    # 4) Mettre à jour les variables temporelles cycliques pour les heures futures.
-    feat_batch["hour"] = hours_t
-    feat_batch["month"] = months_t
-    feat_batch["day_of_week"] = dows_t
-    feat_batch["is_weekend"] = (dows_t >= 5).astype(int)
-    feat_batch["hour_sin"] = np.sin(2 * np.pi * hours_t / 24)
-    feat_batch["hour_cos"] = np.cos(2 * np.pi * hours_t / 24)
-    feat_batch["month_sin"] = np.sin(2 * np.pi * months_t / 12)
-    feat_batch["month_cos"] = np.cos(2 * np.pi * months_t / 12)
-
-    # 5) Prédiction batchée via le modèle hôpital (entraîné sur Lacor).
-    #    Pour un site ≠ Lacor : score illustratif (cf. site_profile_notes).
-    proba_adj = site_predict_proba(feat_batch)
-
-    # Durée estimée par heure via le modèle de durée dédié (repli heuristique).
-    durations = _estimate_durations_batch(proba_adj, feat_batch)
-
-    return pd.DataFrame({
-        "datetime": fc["datetime"].values,
-        "outage_probability": proba_adj,
-        "duration_est_h": durations,
-        "temperature_2m": fc.get("temperature_2m", pd.Series(0.0, index=fc.index)).astype(float).values,
-        "precipitation": fc.get("precipitation", pd.Series(0.0, index=fc.index)).astype(float).values,
-        "wind_speed_10m": fc.get("wind_speed_10m", pd.Series(0.0, index=fc.index)).astype(float).values,
-        "shortwave_radiation": fc.get("shortwave_radiation", pd.Series(0.0, index=fc.index)).astype(float).values,
-    })
 
 
 # ── Détection des sources de données disponibles par hôpital ───────
@@ -454,7 +323,7 @@ def show_data_sources_panel() -> None:
         with cols[i % 2]:
             st.markdown(_source_card_html(src), unsafe_allow_html=True)
 
-    st.markdown("##### Contexte application uniquement (temps réel, hors modèle)")
+    st.markdown("##### Contexte documenté (pipeline / APIs, hors onglets & modèle)")
     cols2 = st.columns(2)
     for i, src in enumerate(context_sources):
         with cols2[i % 2]:
@@ -614,19 +483,9 @@ def compute_shap_local(explainer, row_df: pd.DataFrame, feature_cols: list[str])
     if explainer is None:
         return None, None
     try:
-        sv = explainer.shap_values(row_df[feature_cols])
-        # Normaliser la sortie SHAP vers la classe positive (cf. train_baseline) :
-        # liste [c0, c1] | ndarray 3D (n, features, classes) | 2D (n, features).
-        if isinstance(sv, list):
-            sv = sv[1] if len(sv) > 1 else sv[0]
-        sv = np.asarray(sv)
-        if sv.ndim == 3:
-            sv = sv[:, :, 1] if sv.shape[-1] > 1 else sv[:, :, 0]
-        expected = np.asarray(explainer.expected_value).ravel()
-        expected = float(expected[1] if expected.size > 1 else expected[0])
-        # Une seule ligne → vecteur 1D de longueur n_features.
-        sv_row = sv[0] if sv.ndim == 2 else np.ravel(sv)
-        return sv_row, expected
+        sv = tree_shap_values(explainer, row_df[feature_cols])
+        expected = tree_expected_value(explainer)
+        return sv[0], expected
     except Exception:
         return None, None
 
@@ -681,7 +540,12 @@ def apply_extrapolation_stress(
     return proba_adjusted, details
 
 
-def build_simulation_row(params: dict, df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+def build_simulation_row(
+    params: dict,
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    hospital_key: str = "lacor_uganda",
+) -> pd.DataFrame:
     """
     Construit une ligne de features à partir des paramètres utilisateur.
 
@@ -729,7 +593,10 @@ def build_simulation_row(params: dict, df: pd.DataFrame, feature_cols: list[str]
     ref["hour_cos"] = np.cos(2 * np.pi * hour / 24)
     ref["month_sin"] = np.sin(2 * np.pi * month / 12)
     ref["month_cos"] = np.cos(2 * np.pi * month / 12)
-    ref["is_public_holiday"] = 0
+    from src.utils.public_holidays import is_public_holiday_for_hospital
+    ref["is_public_holiday"] = is_public_holiday_for_hospital(
+        hospital_key, month=month, day_of_week=day_of_week
+    )
 
     total = max(load, 1.0)
     ref["solar_ratio"] = solar / total
@@ -899,12 +766,17 @@ def site_profile_notes(hkey: str, hinfo: dict) -> list[str]:
             "Modèle entraîné sur **Lacor** appliqué ici — généralisation "
             "inter-sites **non démontrée** (cf. README, validation EAGLE-I)."
         )
-    else:  # cloned
+    else:  # cloned (africa_grid)
         notes.append(
             "**Score illustratif** : aucune coupure observée pour ce site. "
             "Modèle Lacor appliqué à un profil de consommation "
             "cloné/redimensionné — **non validé** pour ce site."
         )
+        if hinfo.get("data_source") == "africa_grid":
+            notes.append(
+                "Pas d'estimation de conso depuis Electricity Maps : le profil "
+                "chargé = clone Lacor + météo locale uniquement."
+            )
     rel = hinfo.get("who_reliability")
     stab = hinfo.get("grid_stability", "moyen")
     if rel is not None:
@@ -973,11 +845,13 @@ if _multisite_summ:
 st.sidebar.divider()
 st.sidebar.subheader("Hôpital")
 _n_real = len(HOSPITAL_BY_SOURCE.get("real", []))
+_n_county = len(HOSPITAL_BY_SOURCE.get("county_network", []))
 _n_syn = len(HOSPITAL_BY_SOURCE.get("synthetic", []))
 _n_cloned = len(HOSPITAL_BY_SOURCE.get("cloned", []))
 _filter_labels = {
-    "all": f"Tous ({len(REAL_HOSPITAL_KEYS)})",
+    "all": f"Tous ({len(SELECTOR_HOSPITAL_KEYS)})",
     "real": f"Réel ({_n_real})",
+    "county_network": f"Conso bâtiment, coupures comté ({_n_county})",
     "synthetic": f"Charge réelle, coupures simulées ({_n_syn})",
     "cloned": f"Profil cloné ({_n_cloned})",
 }
@@ -988,7 +862,7 @@ source_filter = st.sidebar.selectbox(
     key="hospital_source_filter",
 )
 if source_filter == "all":
-    hospital_options = _sorted_hospital_keys(REAL_HOSPITAL_KEYS)
+    hospital_options = _sorted_hospital_keys(SELECTOR_HOSPITAL_KEYS)
 else:
     hospital_options = HOSPITAL_BY_SOURCE.get(source_filter, [])
 hospital_key = st.sidebar.selectbox(
@@ -1007,7 +881,7 @@ st.caption(
     f"entraîné sur Lacor — scores illustratifs hors site réel."
 )
 
-st.subheader(f"{hospital['name']}")
+st.subheader(hospital_label(hospital))
 st.caption(f"{hospital['location']} · {hospital['type']} · {_tmeta['label']}")
 
 m1, m2, m3, m4 = st.columns(4)
@@ -1022,112 +896,69 @@ if _profile_notes:
 
 _hospital_sources = detect_hospital_data_sources(hospital_key, hospital)
 
-# ── État réseau local (Electricity Maps, 24 h glissantes) ─────────
-_em_df = load_electricitymaps_snapshot(hospital_key)
-if _em_df is not None and not _em_df.empty:
-    em_24h = _em_df.tail(24).copy()
-    _em_last = em_24h.iloc[-1]
-    _em_zone = _em_last.get("em_zone", "N/A")
-    _em_load = pd.to_numeric(_em_last.get("em_total_load_mw"), errors="coerce")
-    _em_carbon = pd.to_numeric(_em_last.get("em_carbon_intensity_gco2_kwh"), errors="coerce")
-    _em_ren = pd.to_numeric(_em_last.get("em_renewable_pct"), errors="coerce")
-    _em_fossil = pd.to_numeric(_em_last.get("em_fossil_pct"), errors="coerce")
-    _em_ts = pd.to_datetime(_em_last.get("datetime"), errors="coerce")
-
-    if "em_total_load_mw" in em_24h.columns:
-        em_24h["em_total_load_mw"] = pd.to_numeric(
-            em_24h["em_total_load_mw"], errors="coerce",
-        )
-    em_avg_24h = em_24h["em_total_load_mw"].mean() if "em_total_load_mw" in em_24h else float("nan")
-    stress_ratio = (_em_load / em_avg_24h) if (em_avg_24h and not pd.isna(em_avg_24h) and em_avg_24h > 0) else float("nan")
-
-    avg_load_kw_h = float(hospital.get("avg_load_kw", 0) or 0)
-    if avg_load_kw_h > 0 and not pd.isna(em_avg_24h) and em_avg_24h > 0:
-        em_24h["hospital_load_kw_est"] = avg_load_kw_h * (
-            em_24h["em_total_load_mw"] / em_avg_24h
-        )
-        hospital_now_kw = float(em_24h["hospital_load_kw_est"].iloc[-1])
-    else:
-        em_24h["hospital_load_kw_est"] = pd.NA
-        hospital_now_kw = float("nan")
-
-    st.subheader(f"Réseau régional (Electricity Maps · {_em_zone})")
-    em_c1, em_c2, em_c3, em_c4, em_c5 = st.columns(5)
-    em_c1.metric("Charge réseau", "N/A" if pd.isna(_em_load) else f"{_em_load:,.0f} MW")
-    em_c2.metric(
-        "Stress vs moy. 24 h",
-        "N/A" if pd.isna(stress_ratio) else f"× {stress_ratio:.2f}",
-        delta=None if pd.isna(stress_ratio) else f"{(stress_ratio - 1) * 100:+.1f} %",
+_ds = hospital.get("data_source", "")
+if _ds == "eric":
+    st.caption("Consommation : profil horaire **ERIC NHS** (onglets Historique / Prochaine coupure).")
+elif _ds == "nyc_ll84":
+    st.caption(
+        "Consommation : profil horaire **NYC LL84** (bâtiment). "
+        "Coupures : réseau **comté** (EAGLE-I) si ingéré — voir panneau ci-dessous."
     )
-    em_c3.metric(
-        "Conso hôpital estimée",
-        "N/A" if pd.isna(hospital_now_kw) else f"{hospital_now_kw:,.0f} kW",
+elif hospital_key == TRAINED_HOSPITAL:
+    st.caption("Consommation : relevés **Lacor** (terrain).")
+elif _ds == "africa_grid":
+    st.caption(
+        "Consommation : profil **cloné Lacor** (pas de compteur public). "
+        "Météo au point (lat/lon) ; pas de coupure locale publique."
     )
-    em_c4.metric(
-        "Intensité carbone",
-        "N/A" if pd.isna(_em_carbon) else f"{_em_carbon:,.0f} gCO₂/kWh",
-    )
-    if not pd.isna(_em_ren) and not pd.isna(_em_fossil):
-        em_c5.metric("Mix", f"{_em_ren:.0f}% ren. / {_em_fossil:.0f}% foss.")
-    else:
-        em_c5.metric("Mix", "N/A")
 
-    if "em_total_load_mw" in em_24h.columns and em_24h["em_total_load_mw"].notna().any():
-        em_chart_l, em_chart_r = st.columns(2)
-        with em_chart_l:
-            fig_grid = go.Figure()
-            fig_grid.add_trace(go.Scatter(
-                x=em_24h["datetime"], y=em_24h["em_total_load_mw"],
-                mode="lines+markers", name="Charge réseau (MW)",
-                line=dict(color="#f1c40f", width=2),
-            ))
-            fig_grid.update_layout(
-                title="Charge réseau zone (24 h)",
-                xaxis_title="Heure", yaxis_title="MW",
-                height=260, margin=dict(l=40, r=20, t=40, b=40),
-                plot_bgcolor="rgba(0,0,0,0)",
+_local = local_signal_profile(hospital_key, hospital)
+with st.expander("Données vraiment locales (par type de signal)", expanded=False):
+    st.markdown(
+        "| Signal | Granularité |\n|--------|-------------|\n"
+        f"| Consommation | {_local['consumption']} |\n"
+        f"| Coupures (`is_outage`) | {_local['outage']} |\n"
+        f"| Météo | {_local['meteo']} |\n"
+        f"| Contexte réseau (optionnel) | {_local['grid_context']} — **pas** la conso de l'hôpital |"
+    )
+    if hospital_key == "lacor_uganda":
+        st.success("Site de référence : compteur et coupures terrain 2022.")
+    elif _local.get("eaglei_county_key"):
+        _eaglei_df = load_eaglei_local(hospital_key, hospital)
+        if _eaglei_df is not None and not _eaglei_df.empty:
+            _rate = 100 * float(_eaglei_df["is_outage"].mean())
+            st.info(
+                f"**EAGLE-I** : coupures réelles au comté "
+                f"(`eaglei_{_local['eaglei_county_key']}.csv`, "
+                f"taux horaire ≈ {_rate:.2f} %). "
+                "Ce n'est pas le compteur de l'hôpital, mais le réseau du borough/comté."
             )
-            st.plotly_chart(fig_grid, width="stretch")
-        with em_chart_r:
-            if em_24h["hospital_load_kw_est"].notna().any():
-                fig_hosp = go.Figure()
-                fig_hosp.add_trace(go.Scatter(
-                    x=em_24h["datetime"], y=em_24h["hospital_load_kw_est"],
-                    mode="lines+markers",
-                    name="Conso hôpital estimée (kW)",
-                    line=dict(color="#e84393", width=2),
+            if "customers_out_frac" in _eaglei_df.columns:
+                _fig_e = go.Figure()
+                _fig_e.add_trace(go.Scatter(
+                    x=_eaglei_df["datetime"],
+                    y=_eaglei_df["customers_out_frac"],
+                    mode="lines",
+                    name="Part clients coupés (comté)",
+                    line=dict(color="#c0392b", width=1),
                 ))
-                fig_hosp.update_layout(
-                    title=f"Conso {hospital['name']} estimée (24 h)",
-                    xaxis_title="Heure", yaxis_title="kW",
-                    height=260, margin=dict(l=40, r=20, t=40, b=40),
-                    plot_bgcolor="rgba(0,0,0,0)",
+                _fig_e.update_layout(
+                    height=220,
+                    margin=dict(l=40, r=20, t=24, b=40),
+                    yaxis_title="Fraction clients sans courant",
+                    title="Coupures réelles EAGLE-I (comté)",
                 )
-                st.plotly_chart(fig_hosp, width="stretch")
-            else:
-                st.caption(
-                    "Estimation indisponible (avg_load_kw inconnu pour cet hôpital)."
-                )
-
-    if not pd.isna(_em_ts):
+                st.plotly_chart(_fig_e, width="stretch")
+        else:
+            st.warning(
+                "Comté EAGLE-I configuré mais fichier absent — "
+                "`python -m src.data.ingest_eaglei` puis "
+                "`python -m src.data.ingest_nyc_ll84`."
+            )
+    elif _ds == "eric":
         st.caption(
-            f"Dernière mesure Electricity Maps : {_em_ts.strftime('%Y-%m-%d %H:%M UTC')}"
-            " — estimation = avg_load_kw × (charge_réseau_now / charge_réseau_moy_24h)."
+            "Conso **locale** (profil bâtiment). Coupures **simulées** à l'ingestion."
         )
-else:
-    _em_path = electricitymaps_snapshot_path(hospital_key)
-    _ds = hospital.get("data_source", "")
-    if _ds in ("eric", "nyc_ll84"):
-        st.caption(
-            "Pas de snapshot Electricity Maps pour cet hôpital (ERIC/NYC). "
-            "Token `ELECTRICITY_MAPS_TOKEN` + `python -m src.data.ingest_electricitymaps`."
-        )
-    elif not _em_path.exists():
-        st.caption(
-            "Snapshot Electricity Maps absent — voir `ELECTRICITY_MAPS_TOKEN`."
-        )
-    else:
-        st.caption("Fichier Electricity Maps présent mais vide ou illisible.")
 
 with st.expander("Informations techniques", expanded=False):
     doc_tab, val_tab = st.tabs(["Sources et facteurs", "Validation"])
@@ -1153,14 +984,14 @@ try:
     df = load_hospital_data(hospital_key, hospital)
 except Exception as e:
     st.error(
-        f"**Impossible de charger les données pour {hospital['name']}** : {e}\n\n"
+        f"**Impossible de charger les données pour {hospital_label(hospital)}** : {e}\n\n"
         "Vérifiez que le pipeline a été exécuté et que les fichiers de données existent."
     )
     st.stop()
 
 if df is None or df.empty:
     st.error(
-        f"**Aucune donnée disponible pour {hospital['name']}.**\n\n"
+        f"**Aucune donnée disponible pour {hospital_label(hospital)}.**\n\n"
         "Exécutez le pipeline pour générer les données :\n"
         "```bash\npython run_pipeline.py\n```"
     )
@@ -1170,12 +1001,23 @@ for col in feature_cols:
     if col not in df.columns:
         df[col] = 0.0
 
+if _ds == "nyc_ll84" and "outage_source" in df.columns:
+    if (df["outage_source"] == "eaglei_county").any():
+        st.success(
+            "Dataset NYC : **`is_outage`** provient d'**EAGLE-I** (réseau du comté, "
+            "pas du compteur hôpital)."
+        )
+    else:
+        st.warning(
+            "Dataset NYC : coupures encore **simulées**. Relancer "
+            "`python -m src.data.ingest_eaglei` puis `python -m src.data.ingest_nyc_ll84`."
+        )
+
 # ── Onglets ──────────────────────────────────────────────────────────
 
-tab_next, tab_predict, tab_forecast, tab_simulate = st.tabs([
+tab_next, tab_predict, tab_simulate = st.tabs([
     "Prochaine coupure",
     "Historique",
-    "Prévisions J+7",
     "Simulation",
 ])
 
@@ -1186,184 +1028,41 @@ tab_next, tab_predict, tab_forecast, tab_simulate = st.tabs([
 
 with tab_next:
     st.caption(
-        "Probabilité de coupure dans les 1, 3 ou 6 prochaines heures "
-        "(fenêtre 24 h de conso + météo + historique)."
+        "Deux analyses complémentaires : **réseau & météo live** (Electricity Maps) "
+        "et **modèle 1 / 3 / 6 h** sur données hospitalières (replay 2022)."
     )
 
-    if model is None:
-        st.warning(
-            "**Modèle absent.** Lance d'abord "
-            "`python run_pipeline.py`."
-        )
-    elif not HORIZON_MODELS:
-        st.info(
-            "Modèles **1/3/6 h** non trouvés — repli sur le nowcast horaire. "
-            "Pour les entraîner : `python run_pipeline.py` (étape horizons) ou "
-            "`python -m src.models.train_horizons`."
-        )
+    tab_next_live, tab_next_replay = st.tabs([
+        "Réseau & météo (live)",
+        "Modèle 1 / 3 / 6 h (replay)",
+    ])
 
-    if model is not None:
-        # Défaut « temps réel » pour les hôpitaux à réseau live (africa_grid) :
-        # leur consommation 2022 est un clone, le signal pertinent est le
-        # réseau Electricity Maps en direct. Clé par hôpital pour que le défaut
-        # s'applique à chaque changement de site.
-        _is_grid_live = hospital.get("data_source") in REALTIME_GRID_SOURCES
-        # Le mode « Temps réel » n'a de sens que pour les hôpitaux raccordés à un
-        # réseau interrogeable en direct (Electricity Maps) : africa_grid + Lacor.
-        # Pour NHS/NYC (réseaux très stables, pas de zone EM exploitée), on ne
-        # propose QUE l'historique — inutile d'offrir une option « indisponible ».
-        _can_realtime = _is_grid_live or hospital_key == TRAINED_HOSPITAL
-        if _can_realtime:
-            src_mode = st.radio(
-                "Source des dernières 24 h",
-                ["Historique 2022", "Temps réel"],
-                index=1 if _is_grid_live else 0,
-                horizontal=True,
-                key=f"next_src_mode_{hospital_key}",
+    with tab_next_live:
+        st.subheader("Point d'analyse — contexte réseau")
+        show_live_grid_weather_risk(hospital_key, key_prefix="next_em_risk")
+
+    with tab_next_replay:
+        st.subheader("Point d'analyse — replay historique")
+
+        if model is None:
+            st.warning(
+                "**Modèle absent.** Lance d'abord "
+                "`python run_pipeline.py`."
             )
-            realtime = src_mode == "Temps réel"
         else:
-            realtime = False
-
-        # ── Mode TEMPS RÉEL : Electricity Maps + météo récente ─────────
-        if realtime:
-            st.caption(
-                "Charge du **réseau régional** (Electricity Maps, live) → consommation "
-                "estimée (normalisée à l'échelle Lacor) + **météo récente** Open-Meteo. "
-                "Résultat = **risque régional indicatif** (modèle entraîné sur Lacor)."
-            )
-            # Bouton « Rafraîchir » : force un nouvel appel aux APIs avant
-            # expiration du cache (Electricity Maps + délestage EskomSePush).
-            _refresh = st.button("🔄 Rafraîchir", key="btn_rt_refresh", help="Force un nouvel appel Electricity Maps + EskomSePush + météo")
-            if _refresh:
-                load_realtime_forecast.clear()
-                load_loadshedding.clear()
-
-            # ── Délestage programmé (EskomSePush) — sites sud-africains ──
-            # Cause DIRECTE des coupures en Afrique du Sud. Affiché comme
-            # CONTEXTE temps réel (non testable sur Lacor → hors modèle).
-            if loadshedding_supported(hospital_key):
-                ls = load_loadshedding(hospital_key)
-                if ls is None:
-                    st.caption(
-                        "Délestage EskomSePush : définir `ESKOM_SEPUSH_TOKEN` "
-                        "(voir eskomsepush.gumroad.com)."
-                    )
-                else:
-                    cstage, cnext = st.columns([1, 2])
-                    cstage.metric(
-                        f"Délestage · {ls['name']}",
-                        ls["stage_label"],
-                    )
-                    if ls["next"]:
-                        lignes = "\n".join(
-                            f"- Stade **{n['stage']}** à partir de "
-                            f"`{(n.get('start') or '?')[:16].replace('T', ' ')}`"
-                            for n in ls["next"][:3]
-                        )
-                        cnext.markdown("**Prochains changements programmés**\n" + lignes)
-                    else:
-                        cnext.caption("Pas de changement de stade programmé annoncé.")
-                    st.caption(
-                        "Source : EskomSePush (délestage Eskom/municipal). **Contexte "
-                        "causal temps réel** — pas une entrée du modèle (entraîné sur "
-                        "Lacor, Ouganda)."
-                    )
-                    st.divider()
-
-            # Récupération AUTOMATIQUE à l'ouverture (le cache 15 min de
-            # load_realtime_forecast protège l'API ; le bouton ci-dessus force
-            # une mise à jour avant expiration du cache).
-            with st.spinner("Récupération Electricity Maps + météo…"):
-                rt = load_realtime_forecast(
-                    hospital_key,
-                    tuple(feature_cols),
-                    _mtime,
-                    _horizon_models_mtime(),
+            if not HORIZON_MODELS:
+                st.info(
+                    "Modèles **1/3/6 h** non trouvés — repli sur le nowcast horaire. "
+                    "Pour les entraîner : `python run_pipeline.py` (étape horizons) ou "
+                    "`python -m src.models.train_horizons`."
                 )
 
-            if rt is None:
-                st.warning(
-                    "**Données réseau temps réel indisponibles** pour cette zone "
-                    "(token Electricity Maps absent, zone hors plan, ou charge réseau "
-                    "non fournie par l'API). Bascule sur « Historique 2022 »."
-                )
-            else:
-                probs = rt["probs"]
-                st.subheader("Risque à venir")
-                horizon_labels = {1: "≤ 1 h", 3: "≤ 3 h", 6: "≤ 6 h"}
-                cols = st.columns(len(probs))
-                for col, (h, p) in zip(cols, probs.items()):
-                    col.metric(f"Coupure {horizon_labels.get(h, f'{h}h')}", f"{p:.0%}")
-                peak_h = max(probs, key=probs.get)
-                peak_p = probs[peak_h]
-                show_risk_result(
-                    peak_p, float(peak_h),
-                    estimate_outage_duration(peak_p, rt["window"]),
-                    duration_note=DURATION_NOTE,
-                )
-                st.caption(
-                    f"Temps réel · zone {rt.get('zone', '?')} · score indicatif hors Lacor."
-                )
-                st.subheader("Fenêtre 24 h")
-                wv = rt["window"].copy()
-                wv["datetime"] = pd.to_datetime(wv["datetime"])
-                fig_w = go.Figure()
-                fig_w.add_trace(go.Scatter(
-                    x=wv["datetime"], y=wv["total_load_kw"],
-                    mode="lines", name="Conso estimée (kW, éch. Lacor)",
-                    line=dict(color="#3498db", width=2), yaxis="y1",
-                ))
-                if "temperature_2m" in wv.columns and wv["temperature_2m"].notna().any():
-                    fig_w.add_trace(go.Scatter(
-                        x=wv["datetime"], y=wv["temperature_2m"],
-                        mode="lines", name="Température (°C)",
-                        line=dict(color="#e67e22", width=2, dash="dot"), yaxis="y2",
-                    ))
-                fig_w.update_layout(
-                    height=300, margin=dict(l=40, r=40, t=20, b=40),
-                    yaxis=dict(title="Conso estimée (kW)", side="left"),
-                    yaxis2=dict(title="Température (°C)", side="right", overlaying="y", showgrid=False),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                )
-                st.plotly_chart(fig_w, width="stretch")
-
-                # ── Contexte orage / convection (Open-Meteo, fenêtre live) ──
-                # Affiché comme CONTEXTE seulement : le test walk-forward sur
-                # Lacor montre que pluie/rafales DÉGRADENT le modèle (F1 −0.01
-                # à −0.05). On informe sans biaiser la prévision.
-                _w = rt["window"]
-                _prec = pd.to_numeric(_w.get("precipitation"), errors="coerce") if "precipitation" in _w.columns else None
-                _gust = pd.to_numeric(_w.get("wind_gusts_10m"), errors="coerce") if "wind_gusts_10m" in _w.columns else None
-                _cape = pd.to_numeric(_w.get("cape"), errors="coerce") if "cape" in _w.columns else None
-                if _prec is not None or _gust is not None:
-                    with st.expander("Contexte orage (météo)", expanded=False):
-                        sc = st.columns(3)
-                        if _prec is not None:
-                            sc[0].metric("Pluie max (fenêtre)", f"{_prec.max():.1f} mm/h")
-                        if _gust is not None:
-                            sc[1].metric("Rafales max", f"{_gust.max():.0f} km/h")
-                        if _cape is not None and _cape.max() > 0:
-                            cape_max = _cape.max()
-                            conv = "élevé" if cape_max > 1000 else ("modéré" if cape_max > 300 else "faible")
-                            sc[2].metric("CAPE max (convection)", f"{cape_max:.0f} J/kg", help=f"Potentiel orageux {conv}")
-                        else:
-                            sc[2].metric("CAPE max (convection)", "n/d", help="Non fourni par l'API pour cette zone")
-                        st.caption(
-                            "Contexte informatif seulement — pluie/rafales non utilisées "
-                            "comme features du modèle Lacor."
-                        )
-
-        # ── Mode HISTORIQUE 2022 (rejoue les données du site) ──────────
-        else:
             nx_dt = pd.to_datetime(df["datetime"])
             nx_min, nx_max = nx_dt.min(), nx_dt.max()
-
-            st.subheader("Point d'analyse")
             st.caption(
                 f"Données disponibles : **{nx_min.strftime('%Y-%m-%d %Hh')}** → "
                 f"**{nx_max.strftime('%Y-%m-%d %Hh')}**. Le modèle lit les 24 h qui "
-                "précèdent ce point."
+                "précèdent le point choisi."
             )
             ref_day = st.date_input(
                 "Date de référence",
@@ -1372,10 +1071,14 @@ with tab_next:
                 max_value=nx_max.date(),
                 key="next_ref_day",
             )
-            ref_hour = st.slider("Heure de référence", 0, 23, int(nx_max.hour), key="next_ref_hour")
+            ref_hour = st.slider(
+                "Heure de référence", 0, 23, int(nx_max.hour), key="next_ref_hour",
+            )
             ref_ts = pd.Timestamp(ref_day) + pd.Timedelta(hours=ref_hour)
 
-            window = df[(nx_dt > ref_ts - pd.Timedelta(hours=24)) & (nx_dt <= ref_ts)].copy()
+            window = df[
+                (nx_dt > ref_ts - pd.Timedelta(hours=24)) & (nx_dt <= ref_ts)
+            ].copy()
             if window.empty:
                 window = df[nx_dt <= ref_ts].tail(24).copy()
 
@@ -1433,7 +1136,10 @@ with tab_next:
                 fig_w.update_layout(
                     height=300, margin=dict(l=40, r=40, t=20, b=40),
                     yaxis=dict(title="Charge (kW)", side="left"),
-                    yaxis2=dict(title="Température (°C)", side="right", overlaying="y", showgrid=False),
+                    yaxis2=dict(
+                        title="Température (°C)", side="right",
+                        overlaying="y", showgrid=False,
+                    ),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),
                 )
                 st.plotly_chart(fig_w, width="stretch")
@@ -1449,7 +1155,7 @@ with tab_predict:
     elif hospital.get("data_source") == "nyc_ll84":
         data_label = "données NYC LL84 (historique)"
     elif hospital.get("data_source") == "africa_grid":
-        data_label = "profil estimé (quasi temps réel)"
+        data_label = "profil Lacor cloné (pas de compteur site)"
     else:
         data_label = "données historiques"
 
@@ -1651,7 +1357,7 @@ with tab_predict:
         st.divider()
 
         st.subheader("Consommation et statistiques")
-        st.subheader(f"Consommation observée — {hospital['name']} ({window_label})")
+        st.subheader(f"Consommation observée — {hospital_label(hospital)} ({window_label})")
         consumption_view_mode = st.radio(
             "Affichage du signal",
             options=["Auto", "Horaire", "Journalier", "Hebdomadaire"],
@@ -1762,7 +1468,7 @@ with tab_predict:
                 )
                 st.plotly_chart(fig_out, width="stretch")
 
-        st.subheader(f"Statistiques clés — {hospital['name']} (période analysée)")
+        st.subheader(f"Statistiques clés — {hospital_label(hospital)} (période analysée)")
         s1, s2, s3, s4 = st.columns(4)
         n_outages = int(recent["is_outage"].sum()) if "is_outage" in recent.columns else 0
         pct_outage = (
@@ -1770,7 +1476,7 @@ with tab_predict:
             if "is_outage" in recent.columns and len(recent) > 0
             else 0
         )
-        outage_label = "Coupures (2022)" if hospital.get("data_source") != "africa_grid" else "Coupures estimées (fenêtre affichée)"
+        outage_label = "Coupures (2022)" if hospital.get("data_source") != "africa_grid" else "Coupures simulées (fenêtre affichée)"
         s1.metric(outage_label, f"{n_outages}")
         s2.metric("Taux de coupure", f"{pct_outage:.2f}%")
         s3.metric("Charge moyenne", f"{recent['total_load_kw'].mean():.0f} kW")
@@ -1778,173 +1484,7 @@ with tab_predict:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ONGLET 2 : PRÉVISIONS J+7 (à partir d'Open-Meteo Forecast)
-# ═══════════════════════════════════════════════════════════════════
-
-with tab_forecast:
-    st.caption("Risque horaire sur 7 jours à partir des prévisions météo Open-Meteo.")
-
-    forecast_df = load_meteo_forecast(hospital_key, _forecast_file_mtime(hospital_key))
-
-    if forecast_df is None or forecast_df.empty:
-        st.warning(
-            "**Pas de prévisions météo disponibles pour cet hôpital.**\n\n"
-            "Exécutez la récupération des prévisions :\n"
-            "```bash\npython -m src.data.ingest_openmeteo_forecast\n```"
-        )
-    else:
-        fetched_at = forecast_df.get("fetched_at", pd.Series([None])).iloc[0]
-        info_line = f"Prévisions reçues : **{fetched_at}**  " if fetched_at else ""
-        horizon = f"{(forecast_df['datetime'].max() - forecast_df['datetime'].min()).total_seconds() / 3600:.0f} h"
-        st.caption(f"{info_line}· Horizon : **{horizon}** · Source : Open-Meteo Forecast API")
-
-        if st.button("Projeter le risque (J+7)", type="primary", width="stretch", key="btn_forecast"):
-            try:
-                with st.spinner("Projection horaire du risque sur 7 jours…"):
-                    preds = build_forecast_predictions(
-                        hist_df=df,
-                        forecast_df=forecast_df,
-                        feature_cols=feature_cols,
-                        hospital_key=hospital_key,
-                    )
-            except Exception as e:
-                st.error(f"**Erreur lors de la prévision** : {e}")
-                st.stop()
-
-            if preds.empty:
-                st.warning("Aucune prédiction n'a pu être générée.")
-                st.stop()
-
-            max_idx = preds["outage_probability"].idxmax()
-            max_proba = float(preds.loc[max_idx, "outage_probability"])
-            max_time = preds.loc[max_idx, "datetime"]
-            hours_away = max(0.0, (max_time - pd.Timestamp.now(tz=max_time.tz)).total_seconds() / 3600) \
-                if max_time.tz is not None else \
-                max(0.0, (max_time - pd.Timestamp.now()).total_seconds() / 3600)
-
-            duration = float(preds.loc[max_idx, "duration_est_h"]) \
-                if "duration_est_h" in preds.columns \
-                else (round(1.0 + max_proba * 4.0, 1) if max_proba > 0.5 else 0.5)
-
-            st.subheader("Pic de risque")
-            show_risk_result(max_proba, hours_away, duration, duration_note=DURATION_NOTE)
-
-            # ── Bandeau : horaire du pic ─────────────────────────
-            max_time_display = pd.to_datetime(max_time).strftime("%a %d %b %Y · %Hh")
-            st.info(
-                f"**Pic de risque prévu** : {max_time_display}  "
-                f"· Dans **{hours_away:.0f} h** · Probabilité **{max_proba:.0%}**"
-            )
-
-            st.divider()
-
-            # ── Timeline principale ──────────────────────────────
-            st.subheader("Trajectoire et météo")
-            st.subheader("Trajectoire du risque — 7 jours")
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=preds["datetime"], y=preds["outage_probability"],
-                mode="lines", fill="tozeroy",
-                line=dict(color="#e74c3c", width=2),
-                fillcolor="rgba(231, 76, 60, 0.15)",
-                name="Probabilité",
-                hovertemplate="%{x|%a %d %b %Hh}<br>Risque : %{y:.0%}<extra></extra>",
-            ))
-            fig.add_hline(y=0.5, line_dash="dash", line_color="#f39c12",
-                          annotation_text="Seuil d'alerte (50%)", annotation_position="top left")
-            fig.add_hline(y=0.7, line_dash="dot", line_color="#e74c3c",
-                          annotation_text="Seuil critique (70%)", annotation_position="top left")
-            fig.update_layout(
-                yaxis=dict(title="Probabilité", range=[0, 1], tickformat=".0%"),
-                xaxis=dict(title=""), height=350,
-                margin=dict(l=40, r=20, t=20, b=40),
-            )
-            st.plotly_chart(fig, width="stretch")
-
-            # ── Météo prévue ─────────────────────────────────────
-            st.subheader("Contexte météo prévu")
-            fig_meteo = go.Figure()
-            fig_meteo.add_trace(go.Scatter(
-                x=preds["datetime"], y=preds["temperature_2m"],
-                mode="lines", name="Température (°C)",
-                line=dict(color="#e67e22", width=2), yaxis="y1",
-            ))
-            fig_meteo.add_trace(go.Bar(
-                x=preds["datetime"], y=preds["precipitation"],
-                name="Précipitations (mm)", marker_color="#3498db",
-                yaxis="y2", opacity=0.6,
-            ))
-            fig_meteo.update_layout(
-                height=280,
-                margin=dict(l=40, r=40, t=20, b=40),
-                yaxis=dict(title="Température (°C)", side="left"),
-                yaxis2=dict(title="Pluie (mm)", side="right", overlaying="y", showgrid=False),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            )
-            st.plotly_chart(fig_meteo, width="stretch")
-
-            # ── Résumé quotidien ─────────────────────────────────
-            st.subheader("Synthèse par jour")
-            daily = preds.copy()
-            daily["date"] = daily["datetime"].dt.date
-            agg_spec = dict(
-                proba_max=("outage_probability", "max"),
-                proba_mean=("outage_probability", "mean"),
-                heures_risque=("outage_probability", lambda x: int((x > 0.5).sum())),
-                temp_max=("temperature_2m", "max"),
-                pluie_mm=("precipitation", "sum"),
-            )
-            if "duration_est_h" in daily.columns:
-                agg_spec["duration_max_h"] = ("duration_est_h", "max")
-            summary = daily.groupby("date").agg(**agg_spec).reset_index()
-
-            def _risk_label(p: float) -> str:
-                if p > 0.7:
-                    return "Élevé"
-                if p > 0.4:
-                    return "Moyen"
-                return "Faible"
-
-            summary["Niveau"] = summary["proba_max"].map(_risk_label)
-            summary = summary.sort_values(["proba_max", "proba_mean"], ascending=[False, False]).reset_index(drop=True)
-            summary_cols = {
-                "Jour": pd.to_datetime(summary["date"]).dt.strftime("%a %d %b"),
-                "Niveau": summary["Niveau"],
-                "Risque max": summary["proba_max"].map(lambda p: f"{p:.0%}"),
-                "Risque moyen": summary["proba_mean"].map(lambda p: f"{p:.0%}"),
-                "Heures à risque (>50%)": summary["heures_risque"],
-            }
-            if "duration_max_h" in summary.columns:
-                summary_cols["Durée est. max (h)"] = summary["duration_max_h"].round(1)
-            summary_cols["Temp. max (°C)"] = summary["temp_max"].round(1)
-            summary_cols["Pluie (mm)"] = summary["pluie_mm"].round(1)
-            summary_display = pd.DataFrame(summary_cols)
-            st.dataframe(summary_display, hide_index=True, width="stretch")
-
-            # ── Top 5 heures critiques ───────────────────────────
-            st.subheader("Top 5 heures les plus à risque")
-            top5_cols = [
-                "datetime", "outage_probability", "temperature_2m",
-                "precipitation", "wind_speed_10m",
-            ]
-            if "duration_est_h" in preds.columns:
-                top5_cols.append("duration_est_h")
-            top5 = preds.nlargest(5, "outage_probability")[top5_cols].copy()
-            top5_display_cols = {
-                "Date & heure": top5["datetime"].dt.strftime("%a %d %b %Hh"),
-                "Probabilité": top5["outage_probability"].map(lambda p: f"{p:.0%}"),
-            }
-            if "duration_est_h" in top5.columns:
-                top5_display_cols["Durée est. (h)"] = top5["duration_est_h"].round(1)
-            top5_display_cols["Temp. (°C)"] = top5["temperature_2m"].round(1)
-            top5_display_cols["Pluie (mm)"] = top5["precipitation"].round(1)
-            top5_display_cols["Vent (km/h)"] = top5["wind_speed_10m"].round(1)
-            top5_display = pd.DataFrame(top5_display_cols)
-            st.dataframe(top5_display, hide_index=True, width="stretch")
-
-
-# ═══════════════════════════════════════════════════════════════════
-# ONGLET 3 : SIMULATION MANUELLE
+# ONGLET 2 : SIMULATION MANUELLE
 # ═══════════════════════════════════════════════════════════════════
 
 with tab_simulate:
@@ -2029,7 +1569,7 @@ with tab_simulate:
 
         try:
             with st.spinner("Simulation en cours…"):
-                sim_row = build_simulation_row(params, df, feature_cols)
+                sim_row = build_simulation_row(params, df, feature_cols, hospital_key)
                 sim_row = ensure_numeric_feature_frame(sim_row, feature_cols)
                 # Modèle hôpital (Lacor). Pour un site ≠ Lacor, le score est
                 # illustratif (cf. site_profile_notes).
@@ -2140,7 +1680,7 @@ with tab_simulate:
             "sterilization_kw": float(h_avg * 0.06),
             "temperature_2m": 25.0, "humidity": 70, "wind_speed": 10.0,
             "precipitation": 0.0, "pressure": 1013.0, "radiation": 200.0,
-        }, df, feature_cols)
+        }, df, feature_cols, hospital_key)
         median_row = ensure_numeric_feature_frame(median_row, feature_cols)
         median_proba = float(site_predict_proba(median_row)[0])
 

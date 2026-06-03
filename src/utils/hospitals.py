@@ -35,7 +35,7 @@ HOSPITAL_DISPLAY: dict[str, dict] = {
     },
     # ── Hôpitaux africains (réseau temps réel via Electricity Maps) ──
     # data_source = africa_grid : profil Lacor mis à l'échelle par
-    # avg_load_kw, météo Open-Meteo locale, et Electricity Maps live.
+    # avg_load_kw et météo Open-Meteo locale (pas de compteur public).
     "kenyatta_kenya": {
         "name": "Kenyatta National Hospital",
         "location": "Nairobi, Kenya",
@@ -377,10 +377,13 @@ HOSPITAL_DISPLAY: dict[str, dict] = {
         "type": "Public Acute (NYC H+H)",
         "who_reliability": 99.96,
         "lat": 40.7395, "lon": -73.9766, "country": "USA",
+        # Coupures réelles comté (EAGLE-I) — plus local qu'une zone NY-ISO entière.
+        "eaglei_county_key": "new_york_ny",
         "avg_load_kw": 6046, "max_load_kw": 7800,
         "has_solar": False, "has_generator": True,
         "grid_stability": "très stable",
         "data_source": "nyc_ll84", "nyc_code": "nyc_bellevue",
+        "target_source": "county_network",
         "floor_area_m2": 211_475,
         "annual_electricity_kwh": 52_960_248,
         "ingest_geo": True,
@@ -393,10 +396,12 @@ HOSPITAL_DISPLAY: dict[str, dict] = {
         "type": "Private Acute (NYU Langone)",
         "who_reliability": 99.96,
         "lat": 40.7426, "lon": -73.9744, "country": "USA",
+        "eaglei_county_key": "new_york_ny",
         "avg_load_kw": 5153, "max_load_kw": 6700,
         "has_solar": False, "has_generator": True,
         "grid_stability": "très stable",
         "data_source": "nyc_ll84", "nyc_code": "nyc_nyu_tisch",
+        "target_source": "county_network",
         "floor_area_m2": 64_040,
         "annual_electricity_kwh": 45_139_152,
         "ingest_geo": True,
@@ -409,10 +414,12 @@ HOSPITAL_DISPLAY: dict[str, dict] = {
         "type": "Private Acute (NYP)",
         "who_reliability": 99.96,
         "lat": 40.6686, "lon": -73.9801, "country": "USA",
+        "eaglei_county_key": "kings_ny",
         "avg_load_kw": 3698, "max_load_kw": 4800,
         "has_solar": False, "has_generator": True,
         "grid_stability": "très stable",
         "data_source": "nyc_ll84", "nyc_code": "nyc_nyp_brooklyn",
+        "target_source": "county_network",
         "floor_area_m2": 126_587,
         "annual_electricity_kwh": 32_396_762,
         "ingest_geo": True,
@@ -425,10 +432,12 @@ HOSPITAL_DISPLAY: dict[str, dict] = {
         "type": "Public Acute (NYC H+H)",
         "who_reliability": 99.96,
         "lat": 40.7444, "lon": -73.8861, "country": "USA",
+        "eaglei_county_key": "queens_ny",
         "avg_load_kw": 3483, "max_load_kw": 4500,
         "has_solar": False, "has_generator": True,
         "grid_stability": "très stable",
         "data_source": "nyc_ll84", "nyc_code": "nyc_elmhurst",
+        "target_source": "county_network",
         "floor_area_m2": 89_366,
         "annual_electricity_kwh": 30_507_199,
         "ingest_geo": True,
@@ -441,10 +450,12 @@ HOSPITAL_DISPLAY: dict[str, dict] = {
         "type": "Public Acute (NYC H+H)",
         "who_reliability": 99.96,
         "lat": 40.8177, "lon": -73.9242, "country": "USA",
+        "eaglei_county_key": "bronx_ny",
         "avg_load_kw": 3566, "max_load_kw": 4600,
         "has_solar": False, "has_generator": True,
         "grid_stability": "très stable",
         "data_source": "nyc_ll84", "nyc_code": "nyc_lincoln",
+        "target_source": "county_network",
         "floor_area_m2": 110_874,
         "annual_electricity_kwh": 31_236_421,
         "ingest_geo": True,
@@ -480,7 +491,24 @@ TARGET_SOURCE_META: dict[str, dict] = {
         "emoji": "♻️", "color": "#f39c12", "status": "synthetic",
         "detail": "Modèle Lacor appliqué à un profil de consommation cloné",
     },
+    "county_network": {
+        "label": "Coupures réseau comté (EAGLE-I, pas l'hôpital)",
+        "emoji": "🗽", "color": "#3498db", "status": "primary",
+        "detail": "Clients sans courant dans le comté/borough (LL84 = conso bâtiment)",
+    },
 }
+
+
+def hospital_label(info: dict, *, with_location: bool = False) -> str:
+    """Nom affiché avec le drapeau pays (emoji du catalogue)."""
+    flag = (info.get("flag") or "").strip()
+    name = info.get("name", "?")
+    if with_location:
+        loc = info.get("location", "")
+        text = f"{name} — {loc}" if loc else name
+    else:
+        text = name
+    return f"{flag} {text}".strip() if flag else text
 
 
 def get_target_source(key: str, info: dict | None = None) -> str:
@@ -488,8 +516,8 @@ def get_target_source(key: str, info: dict | None = None) -> str:
 
     Source de vérité unique. Un override explicite `target_source` posé dans
     `HOSPITAL_DISPLAY` est respecté ; sinon la valeur est dérivée du
-    `data_source` (lacor → real, eric/nyc_ll84 → synthetic, africa_grid →
-    cloned). Défaut prudent : `synthetic`.
+    `data_source` (lacor → real, eric → synthetic, nyc_ll84 → county_network,
+    africa_grid → cloned). Défaut prudent : `synthetic`.
     """
     if info is None:
         info = HOSPITAL_DISPLAY.get(key, {})
@@ -499,7 +527,9 @@ def get_target_source(key: str, info: dict | None = None) -> str:
     if key == "lacor_uganda":
         return "real"
     ds = info.get("data_source")
-    if ds in ("eric", "nyc_ll84"):
+    if ds == "nyc_ll84":
+        return "county_network"
+    if ds == "eric":
         return "synthetic"
     if ds == "africa_grid":
         return "cloned"
@@ -508,7 +538,7 @@ def get_target_source(key: str, info: dict | None = None) -> str:
 
 def build_hospital_locations() -> dict[str, dict]:
     """Sous-ensemble géolocalisé : sites pour lesquels on lance les
-    pipelines d'ingestion géo (Open-Meteo, Electricity Maps).
+    pipelines d'ingestion géo (Open-Meteo archive ; Forecast/EM optionnels).
 
     Marqués par `ingest_geo: True` dans `HOSPITAL_DISPLAY`. Reproduit
     fidèlement l'ancien dict statique de `config.py`, mais maintenant

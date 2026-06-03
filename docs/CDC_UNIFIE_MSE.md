@@ -59,7 +59,8 @@ Creer un **systeme de stockage energetique** adapte a des facteurs multi-critere
 - Ingestion multi-sources:
   - Lacor (donnees de charge et cible `is_outage` terrain),
   - NHS ERIC et NYC LL84 (profils hospitaliers comparables),
-  - Open-Meteo Archive + Forecast (meteo historique et previsionnelle),
+  - Open-Meteo Archive (meteo historique ; Forecast optionnel),
+  - EAGLE-I comte (NYC) et validation LOSO opt-in (`--multisite`),
   - Electricity Maps (contexte reseau zone, hors features modele),
   - EskomSePush (delestage programme RSA, contexte app),
   - OMS (fiabilite electrique par pays, parametres dans `hospitals.py`).
@@ -111,11 +112,15 @@ Creer un **systeme de stockage energetique** adapte a des facteurs multi-critere
 ### 5.3 Application (Streamlit)
 
 - L'utilisateur doit pouvoir:
-  - choisir un profil d'hopital,
-  - consulter une probabilite de coupure,
-  - visualiser les facteurs explicatifs,
+  - choisir un profil d'hopital (27 sites, filtre par provenance de cible),
+  - consulter un **risque contextuel reseau + meteo** (sous-onglet live, Electricity Maps au GPS),
+  - consulter une **probabilite de coupure** a 1 / 3 / 6 h (sous-onglet replay sur donnees 2022),
+  - parcourir l'historique et les facteurs explicatifs (SHAP),
   - simuler un scenario manuel de charge/meteo,
   - visualiser l'effet d'un scenario de stockage (batterie/H2) sur la couverture des charges vitales.
+
+Structure UI livree : **3 onglets** (Prochaine coupure, Historique, Simulation) ;
+Prochaine coupure = **2 sous-onglets** (live EM vs replay modele).
 
 ### 5.4 Volet Energie & Electricite
 
@@ -166,7 +171,7 @@ Creer un **systeme de stockage energetique** adapte a des facteurs multi-critere
 - **L2 - Modele baseline compare et evalue** (RF/XGB/LGBM + metriques).
 - **L3 - Module de prediction** (`src/models/predict.py`).
 - **L4 - Interface Streamlit operationnelle** (`app.py`).
-- **L5 - Documentation complete** (donnees, APIs, modele, usage).
+- **L5 - Documentation complete** (`README.md`, `docs/DOCUMENTATION_*.md`, alignee pipeline 2026).
 - **L6 - Dossier de dimensionnement energetique** (calculs, hypotheses, scenarios).
 - **L7 - Cahier des charges unifie (ce document)**.
 
